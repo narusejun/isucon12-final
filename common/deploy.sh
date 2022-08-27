@@ -1,19 +1,19 @@
 #!/bin/bash -eux
 
 # 各種設定ファイルのコピー
-#sudo cp -f etc/mysql/mariadb.conf.d/50-server.cnf /etc/mysql/mariadb.conf.d/50-server.cnf
-#sudo cp -f etc/nginx/nginx.conf /etc/nginx/nginx.conf
-#sudo cp -f etc/nginx/sites-available/isucondition.conf /etc/nginx/sites-available/isucondition.conf
-#sudo nginx -t
+sudo cp -f etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/mysql.conf.d/mysqld.cnf
+sudo cp -f etc/nginx/nginx.conf /etc/nginx/nginx.conf
+sudo cp -f etc/nginx/sites-available/isuconquest.conf /etc/nginx/sites-available/isuconquest.conf
+sudo nginx -t
 
 # アプリケーションのビルド
-#cd /home/isucon/webapp/go
-#make
+cd /home/isucon/webapp/go
+go build -o isuconquest
 
 # ミドルウェア・Appの再起動
-#sudo systemctl restart mariadb
-#sudo systemctl reload nginx
-#sudo systemctl restart isuxxxx
+sudo systemctl restart mysql
+sudo systemctl reload nginx
+sudo systemctl restart isuconquest.go
 
 # slow query logの有効化
 QUERY="
