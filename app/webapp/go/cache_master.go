@@ -4,10 +4,12 @@ import (
 	"sync"
 
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
 	masterVersion = "nothing"
+	sf            = &singleflight.Group{}
 
 	itemMasterMux             = &sync.RWMutex{}
 	itemMaster                = make([]*ItemMaster, 0)
@@ -27,8 +29,14 @@ func shouldRecache(db *sqlx.DB) (string, error) {
 	tmp := ""
 	db.Get(&tmp, "SELECT master_version FROM version_masters WHERE status = 1")
 	if tmp != masterVersion {
-		if err := recache(db); err != nil {
-			return masterVersion, err
+		_, err, _ := sf.Do(tmp, func() (interface{}, error) {
+			if err := recache(db); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		})
+		if err != nil {
+			return "", err
 		}
 		masterVersion = tmp
 		return masterVersion, nil
