@@ -394,7 +394,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	loginBonusIds, _f4 := int64ArrPool.get()
 	defer _f4()
 	for i := range loginBonuses {
-		loginBonusIds[i] = loginBonuses[i].ID
+		loginBonusIds = append(loginBonusIds, loginBonuses[i].ID)
 	}
 	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
 	query, params, err := sqlx.In(query, userID, loginBonusIds)
