@@ -570,7 +570,7 @@ func (h *Handler) adminUser(c echo.Context) error {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
-	targetDb := selectDatabase(0)
+	targetDb := selectDatabase(userID)
 
 	query := "SELECT * FROM users WHERE id=?"
 	user := new(User)
@@ -655,7 +655,7 @@ func (h *Handler) adminBanUser(c echo.Context) error {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
-	targetDb := selectDatabase(0)
+	targetDb := selectDatabase(userID)
 
 	requestAt, err := getRequestTime(c)
 	if err != nil {

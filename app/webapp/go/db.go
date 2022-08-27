@@ -39,8 +39,8 @@ func initDatabase() (err error) {
 	return nil
 }
 func selectDatabase(id int64) *sqlx.DB {
-	return dbs[0]
+	return dbs[int(id)%len(dbs)]
 }
 func adminDatabase() *sqlx.DB {
-	return dbs[0]
+	return selectDatabase(0)
 }
