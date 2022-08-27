@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -68,13 +69,6 @@ func main() {
 		AllowHeaders: []string{"Content-Type", "x-master-version", "x-session"},
 	}))
 
-	// connect db
-	dbx, err := connectDB(false)
-	if err != nil {
-		e.Logger.Fatalf("failed to connect to db: %v", err)
-	}
-	defer dbx.Close()
-
 	// Snowflake
 	var nodeId int64
 	if n, err := strconv.ParseInt(os.Getenv("ISUCON_SNOWFLAKE_NODE_ID"), 10, 64); err == nil {
@@ -85,10 +79,15 @@ func main() {
 		panic(err)
 	}
 
+	// init db
+	if err := initDatabase(); err != nil {
+		panic(err)
+	}
+
 	// setting server
 	e.Server.Addr = fmt.Sprintf(":%v", "8080")
 	h := &Handler{
-		DB:            dbx,
+		DB:            selectDatabase(1),
 		snowflakeNode: snowflakeNode,
 	}
 
@@ -97,6 +96,7 @@ func main() {
 
 	// utility
 	e.POST("/initialize", initialize)
+	e.POST("/initializeOne", initializeOne)
 	e.GET("/health", h.health)
 
 	// feature
@@ -126,24 +126,6 @@ func main() {
 
 	e.Logger.Infof("Start server: address=%s", e.Server.Addr)
 	e.Logger.Error(e.StartServer(e.Server))
-}
-
-func connectDB(batch bool) (*sqlx.DB, error) {
-	dsn := fmt.Sprintf(
-		"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=true&loc=%s&multiStatements=%t&interpolateParams=true",
-		getEnv("ISUCON_DB_USER", "isucon"),
-		getEnv("ISUCON_DB_PASSWORD", "isucon"),
-		getEnv("ISUCON_DB_HOST", "127.0.0.1"),
-		getEnv("ISUCON_DB_PORT", "3306"),
-		getEnv("ISUCON_DB_NAME", "isucon"),
-		"Asia%2FTokyo",
-		batch,
-	)
-	dbx, err := sqlx.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	return dbx, nil
 }
 
 // adminMiddleware
@@ -692,16 +674,30 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 // initialize 初期化処理
 // POST /initialize
 func initialize(c echo.Context) error {
-	dbx, err := connectDB(true)
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	defer dbx.Close()
+	errCh := make(chan error, len(dbHosts))
+	wg := sync.WaitGroup{}
 
-	out, err := exec.Command("/bin/sh", "-c", SQLDirectory+"init.sh").CombinedOutput()
-	if err != nil {
-		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
-		return errorResponse(c, http.StatusInternalServerError, err)
+	for _, host := range dbHosts {
+		wg.Add(1)
+		go func(host string) {
+			defer wg.Done()
+
+			resp, err := http.Post(fmt.Sprintf("http://%s:8080/initializeOne", host), "application/json", nil)
+			if err != nil {
+				errCh <- err
+				return
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				errCh <- fmt.Errorf("CODE: %d", resp.StatusCode)
+				return
+			}
+		}(host)
+	}
+
+	wg.Wait()
+	if len(errCh) > 0 {
+		return errorResponse(c, http.StatusInternalServerError, <-errCh)
 	}
 
 	go func() {
@@ -709,6 +705,16 @@ func initialize(c echo.Context) error {
 			log.Printf("failed to communicate with pprotein: %v", err)
 		}
 	}()
+	return successResponse(c, &InitializeResponse{
+		Language: "go",
+	})
+}
+func initializeOne(c echo.Context) error {
+	out, err := exec.Command("/bin/sh", "-c", SQLDirectory+"init.sh").CombinedOutput()
+	if err != nil {
+		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
 
 	return successResponse(c, &InitializeResponse{
 		Language: "go",
