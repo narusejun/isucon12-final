@@ -403,7 +403,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 				ID:                 ubID,
 				UserID:             userID,
 				LoginBonusID:       bonus.ID,
-				LastRewardSequence: 0,
+				LastRewardSequence: 1,
 				LoopCount:          1,
 				CreatedAt:          requestAt,
 				UpdatedAt:          requestAt,
