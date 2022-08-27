@@ -223,12 +223,12 @@ type AdminListMasterResponse struct {
 // adminUpdateMaster マスタデータ更新
 // PUT /admin/master
 func (h *Handler) adminUpdateMaster(c echo.Context) error {
-	for _, db := range dbs {
-		if err := h._adminUpdateMaster(c, db); err != nil {
-			return err
-		}
-	}
-	return nil
+	// for _, db := range dbs {
+	// 	if err := h._adminUpdateMaster(c, db); err != nil {
+	// 		return err
+	// 	}
+	// }
+	return h._adminUpdateMaster(c, selectDatabase(0))
 }
 func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	tx, err := targetDb.Beginx()
