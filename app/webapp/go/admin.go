@@ -257,6 +257,9 @@ func (h *Handler) adminUpdateMaster(c echo.Context) error {
 		return errorResponse(c, err.code, err.err)
 	}
 
+	if _, err := forceRecache(adminDatabase()); err != nil {
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
 	return successResponse(c, <-respCh)
 }
 func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) (*AdminUpdateMasterResponse, int, error) {
@@ -522,11 +525,6 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) (*AdminU
 	}
 
 	err = tx.Commit()
-	if err != nil {
-		return nil, http.StatusInternalServerError, err
-	}
-
-	_, err = forceRecache(adminDatabase())
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
