@@ -102,10 +102,3 @@ innodb_doublewrite = 0
 # [MySQL 8.0.22 で innodb_log_writer_threads の効果を見てみる - Qiita](https://qiita.com/hmatsu47/items/06489ef05bfcaaf310f3)
 # CPUコアが少ない場合はOFF
 innodb_log_writer_threads = off
-
-cd
-mv webapp webapp_bk
-cd repo
-git pull
-cd
-ln -svf /home/isucon/repo/app/webapp
