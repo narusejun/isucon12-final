@@ -102,3 +102,11 @@ innodb_doublewrite = 0
 # [MySQL 8.0.22 で innodb_log_writer_threads の効果を見てみる - Qiita](https://qiita.com/hmatsu47/items/06489ef05bfcaaf310f3)
 # CPUコアが少ない場合はOFF
 innodb_log_writer_threads = off
+
+
+# experimental
+skip_name_resolve=1
+tmp_table_size = 64M
+max_heap_table_size = 64M
+innodb_flush_log_at_timeout = 3
+innodb_log_group_home_dir = /dev/shm
