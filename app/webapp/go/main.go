@@ -570,7 +570,9 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 	}
 	itemIDs := make([]int64, len(items))
 	itemMasters := make(map[int64]ItemMaster, 0)
-	for _, item := range items {
+	for idx, item := range items {
+		itemIDs[idx] = item.itemID
+
 		ok, i := getItemMasterByID(item.itemID)
 		if !ok {
 			continue
