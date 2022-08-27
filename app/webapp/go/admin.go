@@ -18,14 +18,12 @@ import (
 
 // adminSessionCheckMiddleware
 func (h *Handler) adminSessionCheckMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	adminDb := selectDatabase(0)
-
 	return func(c echo.Context) error {
 		sessID := c.Request().Header.Get("x-session")
 
 		adminSession := new(Session)
 		query := "SELECT * FROM admin_sessions WHERE session_id=? AND deleted_at IS NULL"
-		if err := adminDb.Get(adminSession, query, sessID); err != nil {
+		if err := adminDatabase().Get(adminSession, query, sessID); err != nil {
 			if err == sql.ErrNoRows {
 				return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 			}
@@ -39,7 +37,7 @@ func (h *Handler) adminSessionCheckMiddleware(next echo.HandlerFunc) echo.Handle
 
 		if adminSession.ExpiredAt < requestAt {
 			query = "UPDATE admin_sessions SET deleted_at=? WHERE session_id=?"
-			if _, err = adminDb.Exec(query, requestAt, sessID); err != nil {
+			if _, err = adminDatabase().Exec(query, requestAt, sessID); err != nil {
 				return errorResponse(c, http.StatusInternalServerError, err)
 			}
 			return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
@@ -68,7 +66,7 @@ func (h *Handler) adminLogin(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	tx, err := selectDatabase(0).Beginx()
+	tx, err := adminDatabase().Beginx()
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
@@ -153,7 +151,7 @@ func (h *Handler) adminLogout(c echo.Context) error {
 	}
 	// すでにあるsessionをdeleteにする
 	query := "UPDATE admin_sessions SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL"
-	if _, err = selectDatabase(0).Exec(query, requestAt, sessID); err != nil {
+	if _, err = adminDatabase().Exec(query, requestAt, sessID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -163,7 +161,7 @@ func (h *Handler) adminLogout(c echo.Context) error {
 // adminListMaster マスタデータ閲覧
 // GET /admin/master
 func (h *Handler) adminListMaster(c echo.Context) error {
-	adminDb := selectDatabase(0)
+	adminDb := adminDatabase()
 	masterVersions := make([]*VersionMaster, 0)
 	if err := adminDb.Select(&masterVersions, "SELECT * FROM version_masters"); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -543,7 +541,7 @@ func (h *Handler) adminUser(c echo.Context) error {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
-	targetDb := selectDatabase(1)
+	targetDb := selectDatabase(0)
 
 	query := "SELECT * FROM users WHERE id=?"
 	user := new(User)
@@ -628,7 +626,7 @@ func (h *Handler) adminBanUser(c echo.Context) error {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
-	targetDb := selectDatabase(1)
+	targetDb := selectDatabase(0)
 
 	requestAt, err := getRequestTime(c)
 	if err != nil {

@@ -87,7 +87,7 @@ func main() {
 	// setting server
 	e.Server.Addr = fmt.Sprintf(":%v", "8080")
 	h := &Handler{
-		DB:            selectDatabase(1),
+		DB:            selectDatabase(0),
 		snowflakeNode: snowflakeNode,
 	}
 
