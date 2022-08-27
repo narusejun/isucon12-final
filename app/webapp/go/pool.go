@@ -10,6 +10,7 @@ var (
 	loginBonusRewardMasterArrPool        = newArrPool[*LoginBonusRewardMaster](0)
 	userPresentAllReceivedHistoryArrPool = newArrPool[*UserPresentAllReceivedHistory](0)
 	itemMasterArrPool                    = newArrPool[ItemMaster](0)
+	userCardArrPool                      = newArrPool[*UserCard](0)
 )
 
 type arrPool[T any] struct {

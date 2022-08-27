@@ -416,8 +416,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	defer _f1()
 	progressBonuses, _f2 := userLoginBonusArrPool.get()
 	defer _f2()
-	sendLoginBonuses, _f3 := userLoginBonusArrPool.get()
-	defer _f3()
+	sendLoginBonuses := make([]*UserLoginBonus, 0)
 	rewards, _f5 := loginBonusRewardMasterArrPool.get()
 	defer _f5()
 
@@ -541,8 +540,7 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		receivedIds[received[i].PresentAllID] = true
 	}
 
-	obtainPresents, _f0 := userPresentArrPool.get()
-	defer _f0()
+	obtainPresents := make([]*UserPresent, 0)
 	history, _f2 := userPresentAllReceivedHistoryArrPool.get()
 	defer _f2()
 	for _, np := range normalPresents {
@@ -627,13 +625,14 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		itemAmountPerSecMap[item.ID] = *item.AmountPerSec
 	}
 
-	cards := make([]UserCard, 0, len(itemIDs))
+	cards, _f1 := userCardArrPool.get()
+	defer _f1()
 	for _, id := range itemIDs {
 		cID, err := h.generateID()
 		if err != nil {
 			return err
 		}
-		cards = append(cards, UserCard{
+		cards = append(cards, &UserCard{
 			ID:           cID,
 			UserID:       userID,
 			CardID:       id,
@@ -1541,7 +1540,8 @@ func (h *Handler) listItem(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	cardList := make([]*UserCard, 0)
+	cardList, _f1 := userCardArrPool.get()
+	defer _f1()
 	query = "SELECT * FROM user_cards WHERE user_id=?"
 	if err = selectDatabase(userID).Select(&cardList, query, userID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1824,7 +1824,8 @@ func (h *Handler) updateDeck(c echo.Context) error {
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
-	cards := make([]*UserCard, 0)
+	cards, _f0 := userCardArrPool.get()
+	defer _f0()
 	if err = selectDatabase(userID).Select(&cards, query, params...); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
@@ -1928,7 +1929,8 @@ func (h *Handler) reward(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	cards := make([]*UserCard, 0)
+	cards, _f0 := userCardArrPool.get()
+	defer _f0()
 	query = "SELECT * FROM user_cards WHERE id IN (?, ?, ?)"
 	if err = selectDatabase(userID).Select(&cards, query, deck.CardID1, deck.CardID2, deck.CardID3); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1987,7 +1989,8 @@ func (h *Handler) home(c echo.Context) error {
 	}
 
 	// 生産性
-	cards := make([]*UserCard, 0)
+	cards, _f0 := userCardArrPool.get()
+	defer _f0()
 	if deck != nil {
 		cardIds := []int64{deck.CardID1, deck.CardID2, deck.CardID3}
 		query, params, err := sqlx.In("SELECT * FROM user_cards WHERE id IN (?)", cardIds)
