@@ -569,26 +569,17 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 		return nil
 	}
 	itemIDs := make([]int64, len(items))
-	for i, item := range items {
-		itemIDs[i] = item.itemID
+	itemMasters := make(map[int64]ItemMaster, 0)
+	for _, item := range items {
+		ok, i := getItemMasterByID(item.itemID)
+		if !ok {
+			continue
+		}
+		itemMasters[item.itemID] = i
 	}
 
-	q := "SELECT id, item_type FROM item_masters WHERE id IN (?)"
-	q, params, err := sqlx.In(q, itemIDs)
-	if err != nil {
-		return err
-	}
-	_itemMasters := make([]ItemMaster, 0, len(itemIDs))
-	if err := tx.Select(&_itemMasters, q, params...); err != nil {
-		return err
-	}
-	itemMasters := make(map[int64]ItemMaster, len(_itemMasters))
-	for _, item := range _itemMasters {
-		itemMasters[item.ID] = item
-	}
-
-	q = "SELECT id, item_id, amount FROM user_items WHERE user_id=? AND item_id IN (?)"
-	q, params, err = sqlx.In(q, userID, itemIDs)
+	q := "SELECT id, item_id, amount FROM user_items WHERE user_id=? AND item_id IN (?)"
+	q, params, err := sqlx.In(q, userID, itemIDs)
 	if err != nil {
 		return err
 	}
