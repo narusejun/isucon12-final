@@ -321,6 +321,7 @@ func (h *Handler) checkBan(userID int64) (bool, error) {
 	if err := cmd.Err(); err != nil {
 		return false, err
 	}
+	fmt.Println("checkBan", userID, cmd.Val())
 	if cmd.Val() > 0 {
 		return true, nil
 	}
