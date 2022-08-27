@@ -1354,15 +1354,21 @@ func (h *Handler) receivePresent(c echo.Context) error {
 		coinAmount int64
 		cardIDs    []int64
 	)
-	for _, v := range obtainPresent {
-		presentIDs = append(presentIDs, v.ID)
-		switch v.ItemType {
+	for i := range obtainPresent {
+		presentIDs = append(presentIDs, obtainPresent[i].ID)
+		if obtainPresent[i].DeletedAt != nil {
+			return errorResponse(c, http.StatusInternalServerError, fmt.Errorf("received present"))
+		}
+
+		obtainPresent[i].UpdatedAt = requestAt
+		obtainPresent[i].DeletedAt = &requestAt
+		switch obtainPresent[i].ItemType {
 		case 1: // coin
-			coinAmount += int64(v.Amount)
+			coinAmount += int64(obtainPresent[i].Amount)
 		case 2: // card
-			cardIDs = append(cardIDs, v.ItemID)
+			cardIDs = append(cardIDs, obtainPresent[i].ItemID)
 		default:
-			err = h.obtainItem(tx, v.UserID, v.ItemID, v.ItemType, int64(v.Amount), requestAt)
+			err = h.obtainItem(tx, obtainPresent[i].UserID, obtainPresent[i].ItemID, obtainPresent[i].ItemType, int64(obtainPresent[i].Amount), requestAt)
 			if err != nil {
 				if err == ErrUserNotFound || err == ErrItemNotFound {
 					return errorResponse(c, http.StatusNotFound, err)
