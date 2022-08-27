@@ -380,12 +380,14 @@ func isCompleteTodayLogin(lastActivatedAt, requestAt time.Time) bool {
 		lastActivatedAt.Day() == requestAt.Day()
 }
 
+var zeroUserLoginBonusArr = make([]*UserLoginBonus, 0)
+
 // obtainLoginBonus
 func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, error) {
 	// login bonus masterから有効なログインボーナスを取得
 	loginBonuses := getLoginBonusMaster(requestAt)
 	if len(loginBonuses) == 0 {
-		return make([]*UserLoginBonus, 0), nil
+		return zeroUserLoginBonusArr, nil
 	}
 
 	// ボーナスの進捗を全取得
@@ -398,7 +400,8 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	_progress := make([]*UserLoginBonus, 0, len(loginBonusIds))
+	_progress, _f0 := userLoginBonusArrPool.get()
+	defer _f0()
 	if err := tx.Select(&_progress, query, params...); err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -407,9 +410,12 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		progress[bonus.LoginBonusID] = bonus
 	}
 
-	initBonuses := make([]*UserLoginBonus, 0)
-	progressBonuses := make([]*UserLoginBonus, 0)
-	sendLoginBonuses := make([]*UserLoginBonus, 0)
+	initBonuses, _f1 := userLoginBonusArrPool.get()
+	defer _f1()
+	progressBonuses, _f2 := userLoginBonusArrPool.get()
+	defer _f2()
+	sendLoginBonuses, _f3 := userLoginBonusArrPool.get()
+	defer _f3()
 	rewards := make([]*LoginBonusRewardMaster, 0, len(loginBonuses))
 
 	for _, bonus := range loginBonuses {
