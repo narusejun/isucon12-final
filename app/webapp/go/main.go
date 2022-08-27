@@ -96,7 +96,7 @@ func main() {
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{}))
 
 	// utility
-	e.POST("/initialize", initialize)
+	e.POST("/initialize", h.initialize)
 	e.GET("/health", h.health)
 
 	// feature
@@ -123,6 +123,10 @@ func main() {
 	adminAuthAPI.PUT("/admin/master", h.adminUpdateMaster)
 	adminAuthAPI.GET("/admin/user/:userID", h.adminUser)
 	adminAuthAPI.POST("/admin/user/:userID/ban", h.adminBanUser)
+
+	if _, err := shouldRecache(h.DB); err != nil {
+		e.Logger.Fatal(err)
+	}
 
 	e.Logger.Infof("Start server: address=%s", e.Server.Addr)
 	e.Logger.Error(e.StartServer(e.Server))
@@ -170,16 +174,15 @@ func (h *Handler) apiMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		c.Set("requestTime", requestAt.Unix())
 
 		// マスタ確認
-		query := "SELECT * FROM version_masters WHERE status=1"
-		masterVersion := new(VersionMaster)
-		if err := h.DB.Get(masterVersion, query); err != nil {
+		masterVersion, err := shouldRecache(h.DB)
+		if err != nil {
 			if err == sql.ErrNoRows {
 				return errorResponse(c, http.StatusNotFound, fmt.Errorf("active master version is not found"))
 			}
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
 
-		if masterVersion.MasterVersion != c.Request().Header.Get("x-master-version") {
+		if masterVersion != c.Request().Header.Get("x-master-version") {
 			return errorResponse(c, http.StatusUnprocessableEntity, ErrInvalidMasterVersion)
 		}
 
@@ -365,11 +368,7 @@ func isCompleteTodayLogin(lastActivatedAt, requestAt time.Time) bool {
 // obtainLoginBonus
 func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, error) {
 	// login bonus masterから有効なログインボーナスを取得
-	loginBonuses := make([]*LoginBonusMaster, 0)
-	query := "SELECT * FROM login_bonus_masters WHERE start_at <= ? AND end_at >= ?"
-	if err := tx.Select(&loginBonuses, query, requestAt, requestAt); err != nil {
-		return nil, err
-	}
+	loginBonuses := getLoginBonusMaster(requestAt)
 
 	sendLoginBonuses := make([]*UserLoginBonus, 0)
 
@@ -563,18 +562,13 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		return nil
 	}
 
-	q := "SELECT amount_per_sec FROM item_masters WHERE id IN (?)"
-	q, params, err := sqlx.In(q, itemIDs)
-	if err != nil {
-		return err
-	}
 	items := make([]ItemMaster, 0, len(itemIDs))
-	if err := tx.Select(&items, q, params...); err != nil {
-		return err
-	}
-
 	itemAmountPerSecMap := make(map[int64]int, len(items))
-	for _, item := range items {
+	for _, itemID := range itemIDs {
+		ok, item := getItemMasterByID(itemID)
+		if !ok {
+			continue
+		}
 		itemAmountPerSecMap[item.ID] = *item.AmountPerSec
 	}
 
@@ -611,16 +605,13 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 		return h.obtainCards(tx, userID, requestAt, []int64{itemID})
 
 	case 3, 4: // 強化素材
-		query := "SELECT * FROM item_masters WHERE id=? AND item_type=?"
-		item := new(ItemMaster)
-		if err := tx.Get(item, query, itemID, itemType); err != nil {
-			if err == sql.ErrNoRows {
-				return ErrItemNotFound
-			}
-			return err
+		ok, item := getItemMasterByID(itemID)
+		if !ok || item.ItemType != itemType {
+			return ErrItemNotFound
 		}
+
 		// 所持数取得
-		query = "SELECT * FROM user_items WHERE user_id=? AND item_id=?"
+		query := "SELECT * FROM user_items WHERE user_id=? AND item_id=?"
 		uitem := new(UserItem)
 		if err := tx.Get(uitem, query, userID, item.ID); err != nil {
 			if err != sql.ErrNoRows {
@@ -665,7 +656,7 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 
 // initialize 初期化処理
 // POST /initialize
-func initialize(c echo.Context) error {
+func (h *Handler) initialize(c echo.Context) error {
 	dbx, err := connectDB(true)
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -675,6 +666,12 @@ func initialize(c echo.Context) error {
 	out, err := exec.Command("/bin/sh", "-c", SQLDirectory+"init.sh").CombinedOutput()
 	if err != nil {
 		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+
+	_, err = shouldRecache(h.DB)
+	if err != nil {
+		c.Logger().Errorf("Failed to recache masters : %v", err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -756,13 +753,9 @@ func (h *Handler) createUser(c echo.Context) error {
 	}
 
 	// 初期デッキ付与
-	initCard := new(ItemMaster)
-	query = "SELECT * FROM item_masters WHERE id=?"
-	if err = tx.Get(initCard, query, 2); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusNotFound, ErrItemNotFound)
-		}
-		return errorResponse(c, http.StatusInternalServerError, err)
+	ok, initCard := getItemMasterByID(2)
+	if !ok {
+		return errorResponse(c, http.StatusInternalServerError, ErrItemNotFound)
 	}
 
 	initCards := make([]*UserCard, 0, 3)
