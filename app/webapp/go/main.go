@@ -557,30 +557,29 @@ func (h *Handler) obtainCoin(tx *sqlx.Tx, userID, obtainAmount int64) error {
 	return nil
 }
 
+// itemIDsは重複する場合がある
 func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []int64) error {
 	if len(itemIDs) == 0 {
 		return nil
 	}
 
-	q := "SELECT * FROM item_masters WHERE id IN (?) AND item_type=2"
+	q := "SELECT amount_per_sec FROM item_masters WHERE id IN (?)"
 	q, params, err := sqlx.In(q, itemIDs)
 	if err != nil {
 		return err
 	}
-
 	items := make([]ItemMaster, 0, len(itemIDs))
 	if err := tx.Select(&items, q, params...); err != nil {
 		return err
 	}
-	log.Println(itemIDs)
-	log.Println(len(items))
-	log.Println(len(itemIDs))
-	if len(items) != len(itemIDs) {
-		return ErrItemNotFound
+
+	itemAmountPerSecMap := make(map[int64]int, len(items))
+	for _, item := range items {
+		itemAmountPerSecMap[item.ID] = *item.AmountPerSec
 	}
 
-	cards := make([]UserCard, 0, len(items))
-	for _, item := range items {
+	cards := make([]UserCard, 0, len(itemIDs))
+	for _, id := range itemIDs {
 		cID, err := h.generateID()
 		if err != nil {
 			return err
@@ -588,8 +587,8 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		cards = append(cards, UserCard{
 			ID:           cID,
 			UserID:       userID,
-			CardID:       item.ID,
-			AmountPerSec: *item.AmountPerSec,
+			CardID:       id,
+			AmountPerSec: itemAmountPerSecMap[id],
 			Level:        1,
 			TotalExp:     0,
 			CreatedAt:    requestAt,
