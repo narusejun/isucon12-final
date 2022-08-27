@@ -601,19 +601,19 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 	return err
 }
 
-// obtainItem アイテム付与処理
-func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, obtainAmount int64, requestAt int64) error {
-	switch itemType {
-	case 1: // coin
-		return h.obtainCoin(tx, userID, obtainAmount)
+type obtain45Item struct {
+	itemID       int64
+	obtainAmount int64
+}
 
-	case 2: // card(ハンマー)
-		return h.obtainCards(tx, userID, requestAt, []int64{itemID})
+func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []obtain45Item) error {
+	for _, item := range items {
+		itemID := item.itemID
+		obtainAmount := item.obtainAmount
 
-	case 3, 4: // 強化素材
-		query := "SELECT * FROM item_masters WHERE id=? AND item_type=?"
+		query := "SELECT * FROM item_masters WHERE id=?"
 		item := new(ItemMaster)
-		if err := tx.Get(item, query, itemID, itemType); err != nil {
+		if err := tx.Get(item, query, itemID); err != nil {
 			if err == sql.ErrNoRows {
 				return ErrItemNotFound
 			}
@@ -647,7 +647,6 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 			if _, err := tx.Exec(query, uitem.ID, userID, uitem.ItemID, uitem.ItemType, uitem.Amount, requestAt, requestAt); err != nil {
 				return err
 			}
-
 		} else { // 更新
 			uitem.Amount += int(obtainAmount)
 			uitem.UpdatedAt = requestAt
@@ -656,11 +655,24 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// obtainItem アイテム付与処理
+func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, obtainAmount int64, requestAt int64) error {
+	switch itemType {
+	case 1: // coin
+		return h.obtainCoin(tx, userID, obtainAmount)
+
+	case 2: // card(ハンマー)
+		return h.obtainCards(tx, userID, requestAt, []int64{itemID})
+
+	case 3, 4: // 強化素材
+		return h.obtain45Items(tx, userID, requestAt, []obtain45Item{{itemID: itemID, obtainAmount: obtainAmount}})
 	default:
 		return ErrInvalidItemType
 	}
-
-	return nil
 }
 
 // initialize 初期化処理
