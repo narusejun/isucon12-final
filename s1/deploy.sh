@@ -1,7 +1,7 @@
 #!/bin/bash -eux
 
 # 各種設定ファイルのコピー
-sudo cp -f env.sh /home/isucon/env.sh
+sudo cp -f env.sh /home/isucon/env
 #sudo cp -f etc/mysql/mariadb.conf.d/50-server.cnf /etc/mysql/mariadb.conf.d/50-server.cnf
 #sudo cp -f etc/nginx/nginx.conf /etc/nginx/nginx.conf
 #sudo cp -f etc/nginx/sites-available/isucondition.conf /etc/nginx/sites-available/isucondition.conf
