@@ -3,6 +3,7 @@ module github.com/isucon/isucon12-final/webapp/go
 go 1.19
 
 require (
+	github.com/bwmarrin/snowflake v0.3.0
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/google/uuid v1.3.0
 	github.com/jmoiron/sqlx v1.3.5
