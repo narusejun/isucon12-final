@@ -1336,8 +1336,12 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	receivedIDs := make([]int64, len(obtainPresent))
+
 	// 配布処理
 	for i := range obtainPresent {
+		receivedIDs[i] = obtainPresent[i].ID
+
 		if obtainPresent[i].DeletedAt != nil {
 			return errorResponse(c, http.StatusInternalServerError, fmt.Errorf("received present"))
 		}
@@ -1345,11 +1349,6 @@ func (h *Handler) receivePresent(c echo.Context) error {
 		obtainPresent[i].UpdatedAt = requestAt
 		obtainPresent[i].DeletedAt = &requestAt
 		v := obtainPresent[i]
-		query = "UPDATE user_presents SET deleted_at=?, updated_at=? WHERE id=?"
-		_, err := tx.Exec(query, requestAt, requestAt, v.ID)
-		if err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
 
 		_, _, _, err = h.obtainItem(tx, v.UserID, v.ItemID, v.ItemType, int64(v.Amount), requestAt)
 		if err != nil {
@@ -1361,6 +1360,14 @@ func (h *Handler) receivePresent(c echo.Context) error {
 			}
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
+	}
+
+	query, args, err := sqlx.In("UPDATE user_presents SET updated_at = ?, deleted_at = ? WHERE id IN (?)", requestAt, requestAt, receivedIDs)
+	if err != nil {
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+	if _, err := tx.Exec(query, args...); err != nil {
+		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
 	err = tx.Commit()
