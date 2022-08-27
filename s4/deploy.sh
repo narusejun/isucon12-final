@@ -16,3 +16,4 @@ sudo cp -f env.sh /home/isucon/env
 #sudo systemctl reload nginx
 #sudo systemctl restart isuxxxx
 sudo systemctl restart isuconquest.go
+sudo systemctl restart dragonfly

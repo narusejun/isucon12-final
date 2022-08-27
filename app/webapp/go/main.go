@@ -321,7 +321,7 @@ func (h *Handler) checkBan(userID int64) (bool, error) {
 	if err := cmd.Err(); err != nil {
 		return false, err
 	}
-	if cmd.Val() == 1 {
+	if cmd.Val() > 0 {
 		return true, nil
 	}
 	return false, nil
@@ -673,7 +673,7 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 
 // initialize 初期化処理
 // POST /initialize
-func initialize(c echo.Context) error {
+func (h *Handler) initialize(c echo.Context) error {
 	dbx, err := connectDB(true)
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -685,6 +685,8 @@ func initialize(c echo.Context) error {
 		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
+
+	h.Redis.FlushAll(h.Ctx)
 
 	go func() {
 		if _, err := http.Get("https://pprotein.angelkawaii.com/api/group/collect"); err != nil {
