@@ -198,7 +198,7 @@ CREATE TABLE `item_masters` (
   `gained_exp` int comment 'TYPE3:獲得経験値',
   `shortening_min` bigint comment 'TYPE4:短縮時間(分)',
   -- `created_at` bigint,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`, `item_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 
@@ -219,7 +219,8 @@ CREATE TABLE `user_sessions` (
   `expired_at` bigint NOT NULL,
   `deleted_at` bigint default NULL,
   PRIMARY KEY (`id`),
-  UNIQUE uniq_session_id (`user_id`, `session_id`, `deleted_at`)
+  UNIQUE (`user_id`, `session_id`, `deleted_at`),
+  KEY (`session_id`, `deleted_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 /* 更新処理について利用するone time tokenの管理 */
@@ -233,7 +234,8 @@ CREATE TABLE `user_one_time_tokens` (
   `expired_at` bigint NOT NULL,
   `deleted_at` bigint default NULL,
   PRIMARY KEY (`id`),
-  UNIQUE uniq_token (`user_id`, `token`, `deleted_at`)
+  UNIQUE KEY (`user_id`, `deleted_at`, `token`),
+  KEY(`token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 /* 管理者権限のセッション管理 */
