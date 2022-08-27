@@ -441,6 +441,9 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	if err := tx.Select(&normalPresents, query, requestAt, requestAt); err != nil {
 		return nil, err
 	}
+	if len(normalPresents) == 0 {
+		return []*UserPresent{}, nil
+	}
 
 	// 全員プレゼント取得情報更新
 	ids := make([]int64, len(normalPresents))
@@ -499,6 +502,10 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		}
 		obtainPresents = append(obtainPresents, up)
 		history = append(history, h)
+	}
+
+	if len(obtainPresents) == 0 {
+		return obtainPresents, nil
 	}
 
 	_, err = tx.NamedExec(
