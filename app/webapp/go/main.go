@@ -536,7 +536,8 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		receivedIds[received[i].PresentAllID] = true
 	}
 
-	obtainPresents := make([]*UserPresent, 0)
+	obtainPresents, _f0 := userPresentArrPool.get()
+	defer _f0()
 	history := make([]*UserPresentAllReceivedHistory, 0)
 	for _, np := range normalPresents {
 		if receivedIds[np.ID] {
@@ -1273,7 +1274,8 @@ func (h *Handler) drawGacha(c echo.Context) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	// 直付与 => プレゼントに入れる
-	presents := make([]*UserPresent, 0, gachaCount)
+	presents, _f0 := userPresentArrPool.get()
+	defer _f0()
 	for _, v := range result {
 		pID, err := h.generateID()
 		if err != nil {
