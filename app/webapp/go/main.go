@@ -108,7 +108,7 @@ func main() {
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{}))
 
 	// utility
-	e.POST("/initialize", initialize)
+	e.POST("/initialize", h.initialize)
 	e.GET("/health", h.health)
 
 	// feature
