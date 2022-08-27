@@ -3,14 +3,14 @@ package main
 import "sync"
 
 var (
-	int64ArrPool                         = newArrPool[int64](0)
-	userLoginBonusArrPool                = newArrPool[*UserLoginBonus](0)
-	userItemsArrPool                     = newArrPool[*UserItem](0)
-	userPresentArrPool                   = newArrPool[*UserPresent](0)
-	loginBonusRewardMasterArrPool        = newArrPool[*LoginBonusRewardMaster](0)
-	userPresentAllReceivedHistoryArrPool = newArrPool[*UserPresentAllReceivedHistory](0)
-	itemMasterArrPool                    = newArrPool[ItemMaster](0)
-	userCardArrPool                      = newArrPool[*UserCard](0)
+	int64ArrPool                         = newArrPool[int64](100)
+	userLoginBonusArrPool                = newArrPool[*UserLoginBonus](100)
+	userItemsArrPool                     = newArrPool[*UserItem](100)
+	userPresentArrPool                   = newArrPool[*UserPresent](100)
+	loginBonusRewardMasterArrPool        = newArrPool[*LoginBonusRewardMaster](100)
+	userPresentAllReceivedHistoryArrPool = newArrPool[*UserPresentAllReceivedHistory](100)
+	itemMasterArrPool                    = newArrPool[ItemMaster](100)
+	userCardArrPool                      = newArrPool[*UserCard](100)
 )
 
 type arrPool[T any] struct {
