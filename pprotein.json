@@ -1,0 +1,93 @@
+[
+	{
+		"Duration": 60,
+		"Label": "s1",
+		"Type": "pprof",
+		"URL": "http://tun_s1:8888/debug/pprof/profile"
+	},
+	{
+		"Duration": 60,
+		"Label": "s1",
+		"Type": "httplog",
+		"URL": "http://tun_s1:19000/debug/log/httplog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s1",
+		"Type": "slowlog",
+		"URL": "http://tun_s1:19000/debug/log/slowlog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s2",
+		"Type": "pprof",
+		"URL": "http://tun_s2:8888/debug/pprof/profile"
+	},
+	{
+		"Duration": 60,
+		"Label": "s2",
+		"Type": "httplog",
+		"URL": "http://tun_s2:19000/debug/log/httplog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s2",
+		"Type": "slowlog",
+		"URL": "http://tun_s2:19000/debug/log/slowlog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s3",
+		"Type": "pprof",
+		"URL": "http://tun_s3:8888/debug/pprof/profile"
+	},
+	{
+		"Duration": 60,
+		"Label": "s3",
+		"Type": "httplog",
+		"URL": "http://tun_s3:19000/debug/log/httplog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s3",
+		"Type": "slowlog",
+		"URL": "http://tun_s3:19000/debug/log/slowlog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s4",
+		"Type": "pprof",
+		"URL": "http://tun_s4:8888/debug/pprof/profile"
+	},
+	{
+		"Duration": 60,
+		"Label": "s4",
+		"Type": "httplog",
+		"URL": "http://tun_s4:19000/debug/log/httplog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s4",
+		"Type": "slowlog",
+		"URL": "http://tun_s4:19000/debug/log/slowlog"
+	},
+
+	{
+		"Duration": 60,
+		"Label": "s5",
+		"Type": "pprof",
+		"URL": "http://tun_s5:8888/debug/pprof/profile"
+	},
+	{
+		"Duration": 60,
+		"Label": "s5",
+		"Type": "httplog",
+		"URL": "http://tun_s5:19000/debug/log/httplog"
+	},
+	{
+		"Duration": 60,
+		"Label": "s5",
+		"Type": "slowlog",
+		"URL": "http://tun_s5:19000/debug/log/slowlog"
+	}
+]
