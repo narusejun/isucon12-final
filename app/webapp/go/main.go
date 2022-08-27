@@ -2,9 +2,7 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -725,7 +723,6 @@ type InitializeResponse struct {
 // POST /user
 func (h *Handler) createUser(c echo.Context) error {
 	// parse body
-	defer c.Request().Body.Close()
 	req := new(CreateUserRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -898,7 +895,6 @@ type CreateUserResponse struct {
 // login ログイン
 // POST /login
 func (h *Handler) login(c echo.Context) error {
-	defer c.Request().Body.Close()
 	req := new(LoginRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1134,7 +1130,6 @@ func (h *Handler) drawGacha(c echo.Context) error {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid draw gacha times"))
 	}
 
-	defer c.Request().Body.Close()
 	req := new(DrawGachaRequest)
 	if err = parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1324,7 +1319,6 @@ type ListPresentResponse struct {
 // POST /user/{userID}/present/receive
 func (h *Handler) receivePresent(c echo.Context) error {
 	// read body
-	defer c.Request().Body.Close()
 	req := new(ReceivePresentRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1546,7 +1540,6 @@ func (h *Handler) addExpToCard(c echo.Context) error {
 	}
 
 	// read body
-	defer c.Request().Body.Close()
 	req := new(AddExpToCardRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1740,7 +1733,6 @@ func (h *Handler) updateDeck(c echo.Context) error {
 	}
 
 	// read body
-	defer c.Request().Body.Close()
 	req := new(UpdateDeckRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1835,7 +1827,6 @@ func (h *Handler) reward(c echo.Context) error {
 	}
 
 	// parse body
-	defer c.Request().Body.Close()
 	req := new(RewardRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -2038,11 +2029,8 @@ func getEnv(key, defaultVal string) string {
 
 // parseRequestBody parses request body.
 func parseRequestBody(c echo.Context, dist interface{}) error {
-	buf, err := io.ReadAll(c.Request().Body)
+	err := c.Bind(dist)
 	if err != nil {
-		return ErrInvalidRequestBody
-	}
-	if err = json.Unmarshal(buf, &dist); err != nil {
 		return ErrInvalidRequestBody
 	}
 	return nil
