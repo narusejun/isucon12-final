@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	dbHosts = []string{"133.152.6.84", "133.152.6.85"}
+	dbHosts = []string{"133.152.6.82", "133.152.6.83", "133.152.6.84", "133.152.6.85"}
 	dbs     = make([]*sqlx.DB, len(dbHosts))
 )
 
