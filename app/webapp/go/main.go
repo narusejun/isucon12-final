@@ -21,6 +21,7 @@ import (
 	"github.com/kaz/pprotein/integration/standalone"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/mono0x/prand"
 	cmap "github.com/orcaman/concurrent-map/v2"
 	"github.com/pkg/errors"
 )
@@ -1258,7 +1259,7 @@ func (h *Handler) drawGacha(c echo.Context) error {
 	// random値の導出 & 抽選
 	result := make([]*GachaItemMaster, 0, gachaCount)
 	for i := 0; i < int(gachaCount); i++ {
-		random := h.snowflakeNode.Generate().Int64() % sum
+		random := prand.Int63n(sum)
 		boundary := 0
 		for _, v := range gachaItemList {
 			boundary += v.Weight
