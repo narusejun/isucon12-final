@@ -96,7 +96,7 @@ func main() {
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{}))
 
 	// utility
-	e.POST("/initialize", initialize)
+	e.POST("/initialize", h.initialize)
 	e.GET("/health", h.health)
 
 	// feature
@@ -123,6 +123,10 @@ func main() {
 	adminAuthAPI.PUT("/admin/master", h.adminUpdateMaster)
 	adminAuthAPI.GET("/admin/user/:userID", h.adminUser)
 	adminAuthAPI.POST("/admin/user/:userID/ban", h.adminBanUser)
+
+	if _, err := shouldRecache(h.DB); err != nil {
+		e.Logger.Fatal(err)
+	}
 
 	e.Logger.Infof("Start server: address=%s", e.Server.Addr)
 	e.Logger.Error(e.StartServer(e.Server))
@@ -170,16 +174,15 @@ func (h *Handler) apiMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		c.Set("requestTime", requestAt.Unix())
 
 		// マスタ確認
-		query := "SELECT * FROM version_masters WHERE status=1"
-		masterVersion := new(VersionMaster)
-		if err := h.DB.Get(masterVersion, query); err != nil {
+		masterVersion, err := shouldRecache(h.DB)
+		if err != nil {
 			if err == sql.ErrNoRows {
 				return errorResponse(c, http.StatusNotFound, fmt.Errorf("active master version is not found"))
 			}
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
 
-		if masterVersion.MasterVersion != c.Request().Header.Get("x-master-version") {
+		if masterVersion != c.Request().Header.Get("x-master-version") {
 			return errorResponse(c, http.StatusUnprocessableEntity, ErrInvalidMasterVersion)
 		}
 
@@ -365,11 +368,7 @@ func isCompleteTodayLogin(lastActivatedAt, requestAt time.Time) bool {
 // obtainLoginBonus
 func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, error) {
 	// login bonus masterから有効なログインボーナスを取得
-	loginBonuses := make([]*LoginBonusMaster, 0)
-	query := "SELECT * FROM login_bonus_masters WHERE start_at <= ? AND end_at >= ?"
-	if err := tx.Select(&loginBonuses, query, requestAt, requestAt); err != nil {
-		return nil, err
-	}
+	loginBonuses := getLoginBonusMaster(requestAt)
 
 	sendLoginBonuses := make([]*UserLoginBonus, 0)
 
@@ -377,7 +376,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		initBonus := false
 		// ボーナスの進捗取得
 		userBonus := new(UserLoginBonus)
-		query = "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id=?"
+		query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id=?"
 		if err := tx.Get(userBonus, query, userID, bonus.ID); err != nil {
 			if err != sql.ErrNoRows {
 				return nil, err
@@ -550,18 +549,13 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		return nil
 	}
 
-	q := "SELECT amount_per_sec FROM item_masters WHERE id IN (?)"
-	q, params, err := sqlx.In(q, itemIDs)
-	if err != nil {
-		return err
-	}
 	items := make([]ItemMaster, 0, len(itemIDs))
-	if err := tx.Select(&items, q, params...); err != nil {
-		return err
-	}
-
 	itemAmountPerSecMap := make(map[int64]int, len(items))
-	for _, item := range items {
+	for _, itemID := range itemIDs {
+		ok, item := getItemMasterByID(itemID)
+		if !ok {
+			continue
+		}
 		itemAmountPerSecMap[item.ID] = *item.AmountPerSec
 	}
 
@@ -583,8 +577,8 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		})
 	}
 
-	q = "INSERT INTO user_cards(id, user_id, card_id, amount_per_sec, level, total_exp, created_at, updated_at) VALUES (:id, :user_id, :card_id, :amount_per_sec, :level, :total_exp, :created_at, :updated_at)"
-	_, err = tx.NamedExec(q, cards)
+	q := "INSERT INTO user_cards(id, user_id, card_id, amount_per_sec, level, total_exp, created_at, updated_at) VALUES (:id, :user_id, :card_id, :amount_per_sec, :level, :total_exp, :created_at, :updated_at)"
+	_, err := tx.NamedExec(q, cards)
 	return err
 }
 
@@ -691,7 +685,7 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 
 // initialize 初期化処理
 // POST /initialize
-func initialize(c echo.Context) error {
+func (h *Handler) initialize(c echo.Context) error {
 	dbx, err := connectDB(true)
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -701,6 +695,12 @@ func initialize(c echo.Context) error {
 	out, err := exec.Command("/bin/sh", "-c", SQLDirectory+"init.sh").CombinedOutput()
 	if err != nil {
 		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+
+	_, err = shouldRecache(h.DB)
+	if err != nil {
+		c.Logger().Errorf("Failed to recache masters : %v", err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -781,13 +781,9 @@ func (h *Handler) createUser(c echo.Context) error {
 	}
 
 	// 初期デッキ付与
-	initCard := new(ItemMaster)
-	query = "SELECT * FROM item_masters WHERE id=?"
-	if err = tx.Get(initCard, query, 2); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusNotFound, ErrItemNotFound)
-		}
-		return errorResponse(c, http.StatusInternalServerError, err)
+	ok, initCard := getItemMasterByID(2)
+	if !ok {
+		return errorResponse(c, http.StatusInternalServerError, ErrItemNotFound)
 	}
 
 	initCards := make([]*UserCard, 0, 3)
@@ -1033,12 +1029,7 @@ func (h *Handler) listGacha(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	gachaMasterList := []*GachaMaster{}
-	query := "SELECT * FROM gacha_masters WHERE start_at <= ? AND end_at >= ? ORDER BY display_order ASC"
-	err = h.DB.Select(&gachaMasterList, query, requestAt, requestAt)
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	gachaMasterList := getGachaMaster(requestAt)
 
 	if len(gachaMasterList) == 0 {
 		return successResponse(c, &ListGachaResponse{
@@ -1048,13 +1039,8 @@ func (h *Handler) listGacha(c echo.Context) error {
 
 	// ガチャ排出アイテム取得
 	gachaDataList := make([]*GachaData, 0)
-	query = "SELECT * FROM gacha_item_masters WHERE gacha_id=? ORDER BY id ASC"
 	for _, v := range gachaMasterList {
-		var gachaItem []*GachaItemMaster
-		err = h.DB.Select(&gachaItem, query, v.ID)
-		if err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
+		_, gachaItem := getGachaItemMasterByID(v.ID)
 
 		if len(gachaItem) == 0 {
 			return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha item"))
@@ -1067,7 +1053,7 @@ func (h *Handler) listGacha(c echo.Context) error {
 	}
 
 	// genearte one time token
-	query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
 	if _, err = h.DB.Exec(query, requestAt, userID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
@@ -1170,21 +1156,21 @@ func (h *Handler) drawGacha(c echo.Context) error {
 	}
 
 	// gachaIDからガチャマスタの取得
-	query = "SELECT * FROM gacha_masters WHERE id=? AND start_at <= ? AND end_at >= ?"
-	gachaInfo := new(GachaMaster)
-	if err = h.DB.Get(gachaInfo, query, gachaID, requestAt, requestAt); err != nil {
-		if sql.ErrNoRows == err {
-			return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha"))
-		}
-		return errorResponse(c, http.StatusInternalServerError, err)
+	gachaIDint64, err := strconv.ParseInt(gachaID, 10, 64)
+	if err != nil {
+		return errorResponse(c, http.StatusBadRequest, err)
+	}
+	ok, gachaInfo := getGachaMasterByID(gachaIDint64, requestAt)
+	if !ok {
+		return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha"))
 	}
 
 	// gachaItemMasterからアイテムリスト取得
-	gachaItemList := make([]*GachaItemMaster, 0)
-	err = h.DB.Select(&gachaItemList, "SELECT * FROM gacha_item_masters WHERE gacha_id=? ORDER BY id ASC", gachaID)
+	gachaIDint64, err = strconv.ParseInt(gachaID, 10, 64)
 	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+		return errorResponse(c, http.StatusBadRequest, err)
 	}
+	_, gachaItemList := getGachaItemMasterByID(gachaIDint64)
 	if len(gachaItemList) == 0 {
 		return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha item"))
 	}
