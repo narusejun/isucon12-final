@@ -364,20 +364,37 @@ func isCompleteTodayLogin(lastActivatedAt, requestAt time.Time) bool {
 func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, error) {
 	// login bonus masterから有効なログインボーナスを取得
 	loginBonuses := getLoginBonusMaster(requestAt)
+	if len(loginBonuses) == 0 {
+		return make([]*UserLoginBonus, 0), nil
+	}
 
+	// ボーナスの進捗を全取得
+	loginBonusIds := make([]int64, len(loginBonuses))
+	for i := range loginBonuses {
+		loginBonusIds[i] = loginBonuses[i].ID
+	}
+	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
+	query, params, err := sqlx.In(query, userID, loginBonusIds)
+	if err != nil {
+		return nil, err
+	}
+	_progress := make([]*UserLoginBonus, 0, len(loginBonusIds))
+	if err := tx.Select(&_progress, query, params...); err != nil {
+		return nil, err
+	}
+	progress := make(map[int64]*UserLoginBonus, len(_progress))
+	for _, bonus := range _progress {
+		progress[bonus.LoginBonusID] = bonus
+	}
+
+	initBonuses := make([]*UserLoginBonus, 0)
+	progressBonuses := make([]*UserLoginBonus, 0)
 	sendLoginBonuses := make([]*UserLoginBonus, 0)
+	rewards := make([]*LoginBonusRewardMaster, 0, len(loginBonuses))
 
 	for _, bonus := range loginBonuses {
-		initBonus := false
-		// ボーナスの進捗取得
-		userBonus := new(UserLoginBonus)
-		query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id=?"
-		if err := tx.Get(userBonus, query, userID, bonus.ID); err != nil {
-			if err != sql.ErrNoRows {
-				return nil, err
-			}
-			initBonus = true
-
+		userBonus := progress[bonus.ID]
+		if userBonus == nil {
 			ubID, err := h.generateID()
 			if err != nil {
 				return nil, err
@@ -391,47 +408,76 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 				CreatedAt:          requestAt,
 				UpdatedAt:          requestAt,
 			}
-		}
-
-		// ボーナス進捗更新
-		if userBonus.LastRewardSequence < bonus.ColumnCount {
-			userBonus.LastRewardSequence++
+			initBonuses = append(initBonuses, userBonus)
 		} else {
-			if bonus.Looped {
-				userBonus.LoopCount += 1
-				userBonus.LastRewardSequence = 1
+			// ボーナス進捗更新
+			if userBonus.LastRewardSequence < bonus.ColumnCount {
+				userBonus.LastRewardSequence++
 			} else {
-				// 上限まで付与完了
-				continue
+				if bonus.Looped {
+					userBonus.LoopCount += 1
+					userBonus.LastRewardSequence = 1
+				} else {
+					// 上限まで付与完了
+					continue
+				}
 			}
+			userBonus.UpdatedAt = requestAt
+			progressBonuses = append(progressBonuses, userBonus)
 		}
-		userBonus.UpdatedAt = requestAt
+		sendLoginBonuses = append(sendLoginBonuses, userBonus)
 
 		// 今回付与するリソース取得
 		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence(bonus.ID, userBonus.LastRewardSequence)
 		if !ok {
 			return nil, ErrLoginBonusRewardNotFound
 		}
+		rewards = append(rewards, &rewardItem)
+	}
 
-		err := h.obtainItem(tx, userID, rewardItem.ItemID, rewardItem.ItemType, rewardItem.Amount, requestAt)
-		if err != nil {
+	if len(initBonuses) > 0 {
+		query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (:id, :user_id, :login_bonus_id, :last_reward_sequence, :loop_count, :created_at, :updated_at)"
+		if _, err = tx.NamedExec(query, initBonuses); err != nil {
 			return nil, err
 		}
-
-		// 進捗の保存
-		if initBonus {
-			query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-			if _, err = tx.Exec(query, userBonus.ID, userBonus.UserID, userBonus.LoginBonusID, userBonus.LastRewardSequence, userBonus.LoopCount, userBonus.CreatedAt, userBonus.UpdatedAt); err != nil {
-				return nil, err
-			}
-		} else {
-			query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
+	}
+	if len(progressBonuses) > 0 {
+		query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
+		for _, userBonus := range progressBonuses {
 			if _, err = tx.Exec(query, userBonus.LastRewardSequence, userBonus.LoopCount, userBonus.UpdatedAt, userBonus.ID); err != nil {
 				return nil, err
 			}
 		}
+	}
+	if len(rewards) > 0 {
+		var (
+			coinAmount int64
+			cardIDs    []int64
+			item45s    []obtain45Item
+		)
+		for i := range rewards {
+			switch rewards[i].ItemType {
+			case 1: // coin
+				coinAmount += rewards[i].Amount
+			case 2: // card
+				cardIDs = append(cardIDs, rewards[i].ItemID)
+			default:
+				item45s = append(item45s, obtain45Item{
+					itemID:       rewards[i].ItemID,
+					obtainAmount: rewards[i].Amount,
+				})
+			}
+		}
 
-		sendLoginBonuses = append(sendLoginBonuses, userBonus)
+		if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
+			return nil, err
+		}
+		if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
+			return nil, err
+		}
+		if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
+			return nil, err
+		}
 	}
 
 	return sendLoginBonuses, nil
