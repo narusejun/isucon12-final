@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/snowflake"
+	"github.com/go-redis/redis/v9"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -50,6 +52,8 @@ const (
 
 type Handler struct {
 	DB            *sqlx.DB
+	Redis         *redis.Client
+	Ctx           context.Context
 	snowflakeNode *snowflake.Node
 }
 
@@ -75,6 +79,12 @@ func main() {
 	}
 	defer dbx.Close()
 
+	rdb, err := connectRedis()
+	if err != nil {
+		e.Logger.Fatalf("failed to connect to redis: %v", err)
+	}
+	defer rdb.Close()
+
 	// Snowflake
 	var nodeId int64
 	if n, err := strconv.ParseInt(os.Getenv("ISUCON_SNOWFLAKE_NODE_ID"), 10, 64); err == nil {
@@ -89,6 +99,8 @@ func main() {
 	e.Server.Addr = fmt.Sprintf(":%v", "8080")
 	h := &Handler{
 		DB:            dbx,
+		Redis:         rdb,
+		Ctx:           context.Background(),
 		snowflakeNode: snowflakeNode,
 	}
 
@@ -144,6 +156,17 @@ func connectDB(batch bool) (*sqlx.DB, error) {
 		return nil, err
 	}
 	return dbx, nil
+}
+
+func connectRedis() (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr: getEnv("ISUCON_REDIS_ADDR", "localhost:6379"),
+	})
+	err := client.Ping(context.Background()).Err()
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 // adminMiddleware
@@ -294,15 +317,14 @@ func (h *Handler) checkViewerID(userID int64, viewerID string) error {
 
 // checkBan
 func (h *Handler) checkBan(userID int64) (bool, error) {
-	banUser := new(UserBan)
-	query := "SELECT * FROM user_bans WHERE user_id=?"
-	if err := h.DB.Get(banUser, query, userID); err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
+	cmd := h.Redis.Exists(h.Ctx, fmt.Sprintf("ban:%d", userID))
+	if err := cmd.Err(); err != nil {
 		return false, err
 	}
-	return true, nil
+	if cmd.Val() == 1 {
+		return true, nil
+	}
+	return false, nil
 }
 
 // getRequestTime リクエストを受けた時間をコンテキストからunixtimeで取得する
