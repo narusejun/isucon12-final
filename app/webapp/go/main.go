@@ -21,6 +21,7 @@ import (
 	"github.com/kaz/pprotein/integration/standalone"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	cmap "github.com/orcaman/concurrent-map/v2"
 	"github.com/pkg/errors"
 )
 
@@ -47,6 +48,14 @@ const (
 
 	SQLDirectory string = "../sql/"
 )
+
+var (
+	userBanCache = cmap.New[struct{}]()
+)
+
+func resetCache() {
+	userBanCache.Clear()
+}
 
 type Handler struct {
 	snowflakeNode *snowflake.Node
@@ -83,6 +92,9 @@ func main() {
 	if err := initDatabase(); err != nil {
 		panic(err)
 	}
+
+	// cache reset
+	resetCache()
 
 	// setting server
 	e.Server.Addr = fmt.Sprintf(":%v", "8080")
@@ -292,10 +304,18 @@ func (h *Handler) checkViewerID(userID int64, viewerID string) error {
 
 // checkBan
 func (h *Handler) checkBan(userID int64) (bool, error) {
-	banUser := new(UserBan)
-	query := "SELECT * FROM user_bans WHERE user_id=?"
-	if err := selectDatabase(userID).Get(banUser, query, userID); err != nil {
+	if isIchidai {
+		_, ok := userBanCache.Get(strconv.Itoa(int(userID)))
+		if ok {
+			return false, nil
+		}
+	}
+
+	banUser := -1
+	query := "SELECT 1 FROM user_bans WHERE user_id=?"
+	if err := selectDatabase(userID).Get(&banUser, query, userID); err != nil {
 		if err == sql.ErrNoRows {
+			userBanCache.Set(strconv.Itoa(int(userID)), struct{}{})
 			return false, nil
 		}
 		return false, err
@@ -751,6 +771,9 @@ func initialize(c echo.Context) error {
 			log.Printf("failed to communicate with pprotein: %v", err)
 		}
 	}()
+
+	resetCache()
+
 	return successResponse(c, &InitializeResponse{
 		Language: "go",
 	})
@@ -761,6 +784,8 @@ func initializeOne(c echo.Context) error {
 		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
+
+	resetCache()
 
 	return successResponse(c, &InitializeResponse{
 		Language: "go",

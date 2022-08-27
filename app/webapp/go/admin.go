@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -682,6 +683,7 @@ func (h *Handler) adminBanUser(c echo.Context) error {
 	if _, err = targetDb.Exec(query, banID, userID, requestAt, requestAt, requestAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
+	userBanCache.Remove(strconv.Itoa(int(userID)))
 
 	return successResponse(c, &AdminBanUserResponse{
 		User: user,
