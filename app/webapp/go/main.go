@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,6 +200,15 @@ func (h *Handler) checkSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 		}
 
+		sesssionUserIDStrs := strings.Split(sessID, "::")
+		if len(sesssionUserIDStrs) != 2 {
+			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+		}
+		sesssionUserID, err := strconv.ParseInt(sesssionUserIDStrs[1], 10, 64)
+		if err != nil {
+			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+		}
+
 		userID, err := getUserID(c)
 		if err != nil {
 			return errorResponse(c, http.StatusBadRequest, err)
@@ -211,7 +221,7 @@ func (h *Handler) checkSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 
 		userSession := new(Session)
 		query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
-		if err := selectDatabase(userSession.UserID).Get(userSession, query, sessID); err != nil {
+		if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
 			if err == sql.ErrNoRows {
 				return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 			}
@@ -848,7 +858,7 @@ func (h *Handler) createUser(c echo.Context) error {
 	sess := &Session{
 		ID:        sID,
 		UserID:    user.ID,
-		SessionID: sessID,
+		SessionID: fmt.Sprintf("%s::%d", sessID, user.ID),
 		CreatedAt: requestAt,
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 86400,
@@ -946,7 +956,7 @@ func (h *Handler) login(c echo.Context) error {
 	sess := &Session{
 		ID:        sID,
 		UserID:    req.UserID,
-		SessionID: sessID,
+		SessionID: fmt.Sprintf("%s::%d", sessID, user.ID),
 		CreatedAt: requestAt,
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 86400,
