@@ -1348,24 +1348,14 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	receivedIDs := make([]int64, len(obtainPresent))
-
 	// 配布処理
 	var (
+		presentIDs []int64
 		coinAmount int64
 		cardIDs    []int64
 	)
-	for i := range obtainPresent {
-		receivedIDs[i] = obtainPresent[i].ID
-
-		if obtainPresent[i].DeletedAt != nil {
-			return errorResponse(c, http.StatusInternalServerError, fmt.Errorf("received present"))
-		}
-
-		obtainPresent[i].UpdatedAt = requestAt
-		obtainPresent[i].DeletedAt = &requestAt
-		v := obtainPresent[i]
-
+	for _, v := range obtainPresent {
+		presentIDs = append(presentIDs, v.ID)
 		switch v.ItemType {
 		case 1: // coin
 			coinAmount += int64(v.Amount)
@@ -1385,31 +1375,34 @@ func (h *Handler) receivePresent(c echo.Context) error {
 		}
 	}
 
-	query, args, err := sqlx.In("UPDATE user_presents SET updated_at = ?, deleted_at = ? WHERE id IN (?)", requestAt, requestAt, receivedIDs)
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	if _, err := tx.Exec(query, args...); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	if len(presentIDs) > 0 {
+		q := "UPDATE user_presents SET deleted_at=?, updated_at=? WHERE id IN (?)"
+		q, params, err = sqlx.In(q, requestAt, requestAt, presentIDs)
+		if err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
+		if _, err := tx.Exec(q, params...); err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
 
-	if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
-		if err == ErrUserNotFound || err == ErrItemNotFound {
-			return errorResponse(c, http.StatusNotFound, err)
+		if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
+			if err == ErrUserNotFound || err == ErrItemNotFound {
+				return errorResponse(c, http.StatusNotFound, err)
+			}
+			if err == ErrInvalidItemType {
+				return errorResponse(c, http.StatusBadRequest, err)
+			}
+			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-		if err == ErrInvalidItemType {
-			return errorResponse(c, http.StatusBadRequest, err)
+		if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
+			if err == ErrUserNotFound || err == ErrItemNotFound {
+				return errorResponse(c, http.StatusNotFound, err)
+			}
+			if err == ErrInvalidItemType {
+				return errorResponse(c, http.StatusBadRequest, err)
+			}
+			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
-		if err == ErrUserNotFound || err == ErrItemNotFound {
-			return errorResponse(c, http.StatusNotFound, err)
-		}
-		if err == ErrInvalidItemType {
-			return errorResponse(c, http.StatusBadRequest, err)
-		}
-		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
 	err = tx.Commit()
