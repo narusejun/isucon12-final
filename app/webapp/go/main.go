@@ -616,7 +616,8 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		return nil
 	}
 
-	items := make([]ItemMaster, 0, len(itemIDs))
+	items, _f0 := itemMasterArrPool.get()
+	defer _f0()
 	itemAmountPerSecMap := make(map[int64]int, len(items))
 	for _, itemID := range itemIDs {
 		ok, item := getItemMasterByID(itemID)
