@@ -12,4 +12,5 @@ checkout:
 
 .PHONY: start
 start:
+	cd common && ./deploy.sh
 	cd $(HOSTNAME) && ./deploy.sh
