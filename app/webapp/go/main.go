@@ -391,7 +391,8 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	}
 
 	// ボーナスの進捗を全取得
-	loginBonusIds := make([]int64, len(loginBonuses))
+	loginBonusIds, _f4 := int64ArrPool.get()
+	defer _f4()
 	for i := range loginBonuses {
 		loginBonusIds[i] = loginBonuses[i].ID
 	}
