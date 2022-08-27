@@ -61,7 +61,7 @@ func main() {
 	e := echo.New()
 	e.HideBanner = true
 	e.JSONSerializer = &JsonSerializer{}
-	e.Use(middleware.Logger())
+	// e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"*"},
@@ -376,11 +376,11 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
 	query, params, err := sqlx.In(query, userID, loginBonusIds)
 	if err != nil {
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 	_progress := make([]*UserLoginBonus, 0, len(loginBonusIds))
 	if err := tx.Select(&_progress, query, params...); err != nil {
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 	progress := make(map[int64]*UserLoginBonus, len(_progress))
 	for _, bonus := range _progress {
@@ -397,7 +397,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		if userBonus == nil {
 			ubID, err := h.generateID()
 			if err != nil {
-				return nil, err
+				return nil, errors.WithStack(err)
 			}
 			userBonus = &UserLoginBonus{ // ボーナス初期化
 				ID:                 ubID,
@@ -438,14 +438,14 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	if len(initBonuses) > 0 {
 		query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (:id, :user_id, :login_bonus_id, :last_reward_sequence, :loop_count, :created_at, :updated_at)"
 		if _, err = tx.NamedExec(query, initBonuses); err != nil {
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 	}
 	if len(progressBonuses) > 0 {
 		query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
 		for _, userBonus := range progressBonuses {
 			if _, err = tx.Exec(query, userBonus.LastRewardSequence, userBonus.LoopCount, userBonus.UpdatedAt, userBonus.ID); err != nil {
-				return nil, err
+				return nil, errors.WithStack(err)
 			}
 		}
 	}
@@ -470,13 +470,13 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		}
 
 		if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 		if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 		if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 	}
 
