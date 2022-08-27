@@ -569,7 +569,7 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 	}
 
 	items := make([]ItemMaster, 0, len(itemIDs))
-	if err := tx.Select(&items, q, params); err != nil {
+	if err := tx.Select(&items, q, params...); err != nil {
 		return err
 	}
 	if len(items) != len(itemIDs) {
