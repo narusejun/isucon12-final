@@ -526,6 +526,11 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) (*AdminU
 		return nil, http.StatusInternalServerError, err
 	}
 
+	_, err = forceRecache(adminDatabase())
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
 	return &AdminUpdateMasterResponse{
 		VersionMaster: activeMaster,
 	}, 0, nil
