@@ -376,7 +376,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		initBonus := false
 		// ボーナスの進捗取得
 		userBonus := new(UserLoginBonus)
-		query = "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id=?"
+		query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id=?"
 		if err := tx.Get(userBonus, query, userID, bonus.ID); err != nil {
 			if err != sql.ErrNoRows {
 				return nil, err
