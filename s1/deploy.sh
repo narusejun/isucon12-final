@@ -15,3 +15,4 @@ sudo cp -f env.sh /home/isucon/env.sh
 #sudo systemctl restart mariadb
 #sudo systemctl reload nginx
 #sudo systemctl restart isuxxxx
+sudo systemctl restart isuconquest.go
