@@ -572,6 +572,9 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 	if err := tx.Select(&items, q, params...); err != nil {
 		return err
 	}
+	log.Println(itemIDs)
+	log.Println(len(items))
+	log.Println(len(itemIDs))
 	if len(items) != len(itemIDs) {
 		return ErrItemNotFound
 	}
