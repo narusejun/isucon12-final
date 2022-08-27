@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -18,7 +17,6 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/kaz/pprotein/integration/standalone"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/mono0x/prand"
@@ -63,8 +61,6 @@ type Handler struct {
 }
 
 func main() {
-	go standalone.Integrate(":8888")
-
 	rand.Seed(time.Now().UnixNano())
 	time.Local = time.FixedZone("Local", 9*60*60)
 
@@ -765,12 +761,6 @@ func initialize(c echo.Context) error {
 		c.Logger().Errorf("Failed to recache masters : %v", err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-
-	go func() {
-		if _, err := http.Get("https://pprotein.angelkawaii.com/api/group/collect"); err != nil {
-			log.Printf("failed to communicate with pprotein: %v", err)
-		}
-	}()
 
 	resetCache()
 
