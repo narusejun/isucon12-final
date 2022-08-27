@@ -540,21 +540,8 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 }
 
 func (h *Handler) obtainCoin(tx *sqlx.Tx, userID, obtainAmount int64) error {
-	user := new(User)
-	query := "SELECT * FROM users WHERE id=?"
-	if err := tx.Get(user, query, userID); err != nil {
-		if err == sql.ErrNoRows {
-			return ErrUserNotFound
-		}
-		return err
-	}
-
-	query = "UPDATE users SET isu_coin=? WHERE id=?"
-	totalCoin := user.IsuCoin + obtainAmount
-	if _, err := tx.Exec(query, totalCoin, user.ID); err != nil {
-		return err
-	}
-	return nil
+	_, err := tx.Exec("UPDATE users SET isu_coin=isu_coin+? WHERE id=?", obtainAmount, userID)
+	return err
 }
 
 // itemIDsは重複する場合がある
@@ -1394,10 +1381,6 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	)
 	for i := range obtainPresent {
 		presentIDs = append(presentIDs, obtainPresent[i].ID)
-		if obtainPresent[i].DeletedAt != nil {
-			return errorResponse(c, http.StatusInternalServerError, fmt.Errorf("received present"))
-		}
-
 		obtainPresent[i].UpdatedAt = requestAt
 		obtainPresent[i].DeletedAt = &requestAt
 		switch obtainPresent[i].ItemType {
