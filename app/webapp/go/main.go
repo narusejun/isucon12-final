@@ -1002,12 +1002,7 @@ func (h *Handler) listGacha(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	gachaMasterList := []*GachaMaster{}
-	query := "SELECT * FROM gacha_masters WHERE start_at <= ? AND end_at >= ? ORDER BY display_order ASC"
-	err = h.DB.Select(&gachaMasterList, query, requestAt, requestAt)
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	gachaMasterList := getGachaMaster(requestAt)
 
 	if len(gachaMasterList) == 0 {
 		return successResponse(c, &ListGachaResponse{
@@ -1017,13 +1012,8 @@ func (h *Handler) listGacha(c echo.Context) error {
 
 	// ガチャ排出アイテム取得
 	gachaDataList := make([]*GachaData, 0)
-	query = "SELECT * FROM gacha_item_masters WHERE gacha_id=? ORDER BY id ASC"
 	for _, v := range gachaMasterList {
-		var gachaItem []*GachaItemMaster
-		err = h.DB.Select(&gachaItem, query, v.ID)
-		if err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
+		_, gachaItem := getGachaItemMasterByID(v.ID)
 
 		if len(gachaItem) == 0 {
 			return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha item"))
@@ -1036,7 +1026,7 @@ func (h *Handler) listGacha(c echo.Context) error {
 	}
 
 	// genearte one time token
-	query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
 	if _, err = h.DB.Exec(query, requestAt, userID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
@@ -1140,21 +1130,21 @@ func (h *Handler) drawGacha(c echo.Context) error {
 	}
 
 	// gachaIDからガチャマスタの取得
-	query = "SELECT * FROM gacha_masters WHERE id=? AND start_at <= ? AND end_at >= ?"
-	gachaInfo := new(GachaMaster)
-	if err = h.DB.Get(gachaInfo, query, gachaID, requestAt, requestAt); err != nil {
-		if sql.ErrNoRows == err {
-			return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha"))
-		}
-		return errorResponse(c, http.StatusInternalServerError, err)
+	gachaIDint64, err := strconv.ParseInt(gachaID, 10, 64)
+	if err != nil {
+		return errorResponse(c, http.StatusBadRequest, err)
+	}
+	ok, gachaInfo := getGachaMasterByID(gachaIDint64, requestAt)
+	if !ok {
+		return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha"))
 	}
 
 	// gachaItemMasterからアイテムリスト取得
-	gachaItemList := make([]*GachaItemMaster, 0)
-	err = h.DB.Select(&gachaItemList, "SELECT * FROM gacha_item_masters WHERE gacha_id=? ORDER BY id ASC", gachaID)
+	gachaIDint64, err = strconv.ParseInt(gachaID, 10, 64)
 	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+		return errorResponse(c, http.StatusBadRequest, err)
 	}
+	_, gachaItemList := getGachaItemMasterByID(gachaIDint64)
 	if len(gachaItemList) == 0 {
 		return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha item"))
 	}

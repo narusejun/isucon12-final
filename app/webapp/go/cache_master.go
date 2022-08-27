@@ -12,6 +12,8 @@ var (
 
 	loginBonusMaster = make([]*LoginBonusMaster, 0)
 	itemMaster       = make([]*ItemMaster, 0)
+	gachaMaster      = make([]*GachaMaster, 0)
+	gachaItemMaster  = make([]*GachaItemMaster, 0)
 )
 
 func shouldRecache(db *sqlx.DB) (string, error) {
@@ -37,6 +39,16 @@ func recache(db *sqlx.DB) error {
 
 	query = "SELECT * FROM item_masters"
 	if err := db.Select(&itemMaster, query); err != nil {
+		return err
+	}
+
+	query = "SELECT * FROM gacha_masters ORDER BY display_order"
+	if err := db.Select(&gachaMaster, query); err != nil {
+		return err
+	}
+
+	query = "SELECT * FROM gacha_item_masters ORDER BY id ASC"
+	if err := db.Select(&gachaItemMaster, query); err != nil {
 		return err
 	}
 
@@ -66,4 +78,42 @@ func getItemMasterByID(id int64) (bool, ItemMaster) {
 	}
 
 	return false, ItemMaster{}
+}
+
+func getGachaMaster(requestAt int64) []*GachaMaster {
+	masterMux.RLock()
+	defer masterMux.RUnlock()
+	masters := make([]*GachaMaster, 0)
+	for _, v := range gachaMaster {
+		if v.StartAt <= requestAt && requestAt <= v.EndAt {
+			masters = append(masters, v)
+		}
+	}
+
+	return masters
+}
+
+func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
+	masterMux.RLock()
+	defer masterMux.RUnlock()
+	for _, v := range gachaMaster {
+		if v.ID == id && v.StartAt <= requestAt && requestAt <= v.EndAt {
+			return true, *v
+		}
+	}
+
+	return false, GachaMaster{}
+}
+
+func getGachaItemMasterByID(id int64) (bool, []*GachaItemMaster) {
+	masterMux.RLock()
+	defer masterMux.RUnlock()
+	gachaItems := make([]*GachaItemMaster, 0)
+	for _, v := range gachaItemMaster {
+		if v.GachaID == id {
+			gachaItems = append(gachaItems, v)
+		}
+	}
+
+	return len(gachaItems) != 0, gachaItems
 }
