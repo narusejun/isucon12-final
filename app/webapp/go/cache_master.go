@@ -24,8 +24,18 @@ var (
 	loginBonusRewardMasterMux = &sync.RWMutex{}
 	loginBonusRewardMaster    = make([]*LoginBonusRewardMaster, 0)
 )
+var (
+	isIchidai bool
+)
+
+func init() {
+	isIchidai = getEnv("ISUCON_ICHIDAI", "") != ""
+}
 
 func shouldRecache(db *sqlx.DB) (string, error) {
+	if isIchidai {
+		return masterVersion, nil
+	}
 	tmp := ""
 	if err := db.Get(&tmp, "SELECT master_version FROM version_masters WHERE status = 1"); err != nil {
 		return "", err
@@ -43,6 +53,19 @@ func shouldRecache(db *sqlx.DB) (string, error) {
 		masterVersion = tmp
 		return masterVersion, nil
 	}
+	return masterVersion, nil
+}
+
+func forceRecache(db *sqlx.DB) (string, error) {
+	tmp := ""
+	if err := db.Get(&tmp, "SELECT master_version FROM version_masters WHERE status = 1"); err != nil {
+		return "", err
+	}
+	masterVersion = tmp
+	if err := recache(db); err != nil {
+		return "", err
+	}
+
 	return masterVersion, nil
 }
 

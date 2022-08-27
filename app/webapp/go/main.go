@@ -123,7 +123,7 @@ func main() {
 	adminAuthAPI.GET("/admin/user/:userID", h.adminUser)
 	adminAuthAPI.POST("/admin/user/:userID/ban", h.adminBanUser)
 
-	if _, err := shouldRecache(adminDatabase()); err != nil {
+	if _, err := forceRecache(adminDatabase()); err != nil {
 		e.Logger.Fatal(err)
 	}
 
@@ -694,7 +694,7 @@ func initialize(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, <-errCh)
 	}
 
-	_, err := shouldRecache(adminDatabase())
+	_, err := forceRecache(adminDatabase())
 	if err != nil {
 		c.Logger().Errorf("Failed to recache masters : %v", err)
 		return errorResponse(c, http.StatusInternalServerError, err)
