@@ -27,7 +27,9 @@ var (
 
 func shouldRecache(db *sqlx.DB) (string, error) {
 	tmp := ""
-	db.Get(&tmp, "SELECT master_version FROM version_masters WHERE status = 1")
+	if err := db.Get(&tmp, "SELECT master_version FROM version_masters WHERE status = 1"); err != nil {
+		return "", err
+	}
 	if tmp != masterVersion {
 		_, err, _ := sf.Do(tmp, func() (interface{}, error) {
 			if err := recache(db); err != nil {
