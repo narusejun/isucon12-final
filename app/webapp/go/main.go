@@ -418,7 +418,8 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	defer _f2()
 	sendLoginBonuses, _f3 := userLoginBonusArrPool.get()
 	defer _f3()
-	rewards := make([]*LoginBonusRewardMaster, 0, len(loginBonuses))
+	rewards, _f5 := loginBonusRewardMasterArrPool.get()
+	defer _f5()
 
 	for _, bonus := range loginBonuses {
 		userBonus := progress[bonus.ID]
@@ -526,7 +527,8 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		ids[i] = normalPresents[i].ID
 	}
 
-	received := make([]*UserPresentAllReceivedHistory, 0, len(normalPresents))
+	received, _f1 := userPresentAllReceivedHistoryArrPool.get()
+	defer _f1()
 	q, params, err := sqlx.In("SELECT present_all_id FROM user_present_all_received_history WHERE user_id=? AND present_all_id IN (?)", userID, ids)
 	if err != nil {
 		return nil, err
@@ -541,7 +543,8 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 
 	obtainPresents, _f0 := userPresentArrPool.get()
 	defer _f0()
-	history := make([]*UserPresentAllReceivedHistory, 0)
+	history, _f2 := userPresentAllReceivedHistoryArrPool.get()
+	defer _f2()
 	for _, np := range normalPresents {
 		if receivedIds[np.ID] {
 			continue
