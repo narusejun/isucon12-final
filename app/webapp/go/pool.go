@@ -5,6 +5,7 @@ import "sync"
 var (
 	int64ArrPool          = newArrPool[int64](0)
 	userLoginBonusArrPool = newArrPool[*UserLoginBonus](0)
+	userItemsArrPool      = newArrPool[*UserItem](0)
 )
 
 type arrPool[T any] struct {

@@ -668,7 +668,8 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 	if err != nil {
 		return err
 	}
-	_userItems := make([]*UserItem, 0, len(itemIDs))
+	_userItems, _f0 := userItemsArrPool.get()
+	defer _f0()
 	if err := tx.Select(&_userItems, q, params...); err != nil {
 		return err
 	}
@@ -677,7 +678,8 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 		userItems[item.ItemID] = item
 	}
 
-	blkInserts := make([]*UserItem, 0)
+	blkInserts, _f1 := userItemsArrPool.get()
+	defer _f1()
 	blkUpdates := make(map[int64]int)
 	for _, tmp := range items {
 		if userItems[tmp.itemID] == nil {
@@ -718,22 +720,6 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 	}
 
 	return nil
-}
-
-// obtainItem アイテム付与処理
-func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, obtainAmount int64, requestAt int64) error {
-	switch itemType {
-	case 1: // coin
-		return h.obtainCoin(tx, userID, obtainAmount)
-
-	case 2: // card(ハンマー)
-		return h.obtainCards(tx, userID, requestAt, []int64{itemID})
-
-	case 3, 4: // 強化素材
-		return h.obtain45Items(tx, userID, requestAt, []obtain45Item{{itemID: itemID, obtainAmount: obtainAmount}})
-	default:
-		return ErrInvalidItemType
-	}
 }
 
 // initialize 初期化処理
@@ -1537,7 +1523,8 @@ func (h *Handler) listItem(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	itemList := []*UserItem{}
+	itemList, _f0 := userItemsArrPool.get()
+	defer _f0()
 	query = "SELECT * FROM user_items WHERE user_id = ?"
 	if err = selectDatabase(userID).Select(&itemList, query, userID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1719,7 +1706,8 @@ func (h *Handler) addExpToCard(c echo.Context) error {
 		}
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-	resultItems := make([]*UserItem, 0)
+	resultItems, _f0 := userItemsArrPool.get()
+	defer _f0()
 	for _, v := range items {
 		resultItems = append(resultItems, &UserItem{
 			ID:        v.ID,
