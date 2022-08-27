@@ -13,7 +13,6 @@ go build -o isuconquest
 # ミドルウェア・Appの再起動
 sudo systemctl restart mysql
 sudo systemctl reload nginx
-sudo systemctl restart isuconquest.go
 
 # slow query logの有効化
 QUERY="
