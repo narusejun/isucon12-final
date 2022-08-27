@@ -510,11 +510,13 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	return sendLoginBonuses, nil
 }
 
+var zeroUserPresentArr = make([]*UserPresent, 0)
+
 // obtainPresent プレゼント付与処理
 func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserPresent, error) {
 	normalPresents := getPresentAllMaster(requestAt)
 	if len(normalPresents) == 0 {
-		return []*UserPresent{}, nil
+		return zeroUserPresentArr, nil
 	}
 
 	// 全員プレゼント取得情報更新
@@ -1343,7 +1345,8 @@ func (h *Handler) listPresent(c echo.Context) error {
 	}
 
 	offset := PresentCountPerPage * (n - 1)
-	presentList := []*UserPresent{}
+	presentList, _f0 := userPresentArrPool.get()
+	defer _f0()
 	query := `
 	SELECT * FROM user_presents
 	WHERE user_id = ? AND deleted_at IS NULL
@@ -1404,14 +1407,15 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
-	obtainPresent := []*UserPresent{}
+	obtainPresent, _f0 := userPresentArrPool.get()
+	defer _f0()
 	if err = selectDatabase(userID).Select(&obtainPresent, query, params...); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
 	if len(obtainPresent) == 0 {
 		return successResponse(c, &ReceivePresentResponse{
-			UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, []*UserPresent{}),
+			UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, zeroUserPresentArr),
 		})
 	}
 
