@@ -539,24 +539,29 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	return obtainPresents, nil
 }
 
+func (h *Handler) obtainCoin(tx *sqlx.Tx, userID, obtainAmount int64) error {
+	user := new(User)
+	query := "SELECT * FROM users WHERE id=?"
+	if err := tx.Get(user, query, userID); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrUserNotFound
+		}
+		return err
+	}
+
+	query = "UPDATE users SET isu_coin=? WHERE id=?"
+	totalCoin := user.IsuCoin + obtainAmount
+	if _, err := tx.Exec(query, totalCoin, user.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // obtainItem アイテム付与処理
 func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, obtainAmount int64, requestAt int64) error {
 	switch itemType {
 	case 1: // coin
-		user := new(User)
-		query := "SELECT * FROM users WHERE id=?"
-		if err := tx.Get(user, query, userID); err != nil {
-			if err == sql.ErrNoRows {
-				return ErrUserNotFound
-			}
-			return err
-		}
-
-		query = "UPDATE users SET isu_coin=? WHERE id=?"
-		totalCoin := user.IsuCoin + obtainAmount
-		if _, err := tx.Exec(query, totalCoin, user.ID); err != nil {
-			return err
-		}
+		return h.obtainCoin(tx, userID, obtainAmount)
 
 	case 2: // card(ハンマー)
 		query := "SELECT * FROM item_masters WHERE id=? AND item_type=?"
@@ -1330,6 +1335,7 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	receivedIDs := make([]int64, len(obtainPresent))
 
 	// 配布処理
+	var coinAmount int64
 	for i := range obtainPresent {
 		receivedIDs[i] = obtainPresent[i].ID
 
@@ -1340,6 +1346,12 @@ func (h *Handler) receivePresent(c echo.Context) error {
 		obtainPresent[i].UpdatedAt = requestAt
 		obtainPresent[i].DeletedAt = &requestAt
 		v := obtainPresent[i]
+
+		// coin
+		if v.ItemType == 1 {
+			coinAmount += int64(v.Amount)
+			continue
+		}
 
 		err = h.obtainItem(tx, v.UserID, v.ItemID, v.ItemType, int64(v.Amount), requestAt)
 		if err != nil {
@@ -1358,6 +1370,16 @@ func (h *Handler) receivePresent(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 	if _, err := tx.Exec(query, args...); err != nil {
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+
+	if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
+		if err == ErrUserNotFound || err == ErrItemNotFound {
+			return errorResponse(c, http.StatusNotFound, err)
+		}
+		if err == ErrInvalidItemType {
+			return errorResponse(c, http.StatusBadRequest, err)
+		}
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
