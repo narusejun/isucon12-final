@@ -557,27 +557,32 @@ func (h *Handler) obtainCoin(tx *sqlx.Tx, userID, obtainAmount int64) error {
 	return nil
 }
 
-// obtainItem アイテム付与処理
-func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, obtainAmount int64, requestAt int64) error {
-	switch itemType {
-	case 1: // coin
-		return h.obtainCoin(tx, userID, obtainAmount)
+func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []int64) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
 
-	case 2: // card(ハンマー)
-		query := "SELECT * FROM item_masters WHERE id=? AND item_type=?"
-		item := new(ItemMaster)
-		if err := tx.Get(item, query, itemID, itemType); err != nil {
-			if err == sql.ErrNoRows {
-				return ErrItemNotFound
-			}
-			return err
-		}
+	q := "SELECT * FROM item_masters WHERE id IN (?) AND item_type=2"
+	q, params, err := sqlx.In(q, itemIDs)
+	if err != nil {
+		return err
+	}
 
+	items := make([]ItemMaster, 0, len(itemIDs))
+	if err := tx.Select(&items, q, params); err != nil {
+		return err
+	}
+	if len(items) != len(itemIDs) {
+		return ErrItemNotFound
+	}
+
+	cards := make([]UserCard, 0, len(items))
+	for _, item := range items {
 		cID, err := h.generateID()
 		if err != nil {
 			return err
 		}
-		card := &UserCard{
+		cards = append(cards, UserCard{
 			ID:           cID,
 			UserID:       userID,
 			CardID:       item.ID,
@@ -586,11 +591,22 @@ func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, ob
 			TotalExp:     0,
 			CreatedAt:    requestAt,
 			UpdatedAt:    requestAt,
-		}
-		query = "INSERT INTO user_cards(id, user_id, card_id, amount_per_sec, level, total_exp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-		if _, err := tx.Exec(query, card.ID, card.UserID, card.CardID, card.AmountPerSec, card.Level, card.TotalExp, card.CreatedAt, card.UpdatedAt); err != nil {
-			return err
-		}
+		})
+	}
+
+	q = "INSERT INTO user_cards(id, user_id, card_id, amount_per_sec, level, total_exp, created_at, updated_at) VALUES (:id, :user_id, :card_id, :amount_per_sec, :level, :total_exp, :created_at, :updated_at)"
+	_, err = tx.NamedExec(q, cards)
+	return err
+}
+
+// obtainItem アイテム付与処理
+func (h *Handler) obtainItem(tx *sqlx.Tx, userID, itemID int64, itemType int, obtainAmount int64, requestAt int64) error {
+	switch itemType {
+	case 1: // coin
+		return h.obtainCoin(tx, userID, obtainAmount)
+
+	case 2: // card(ハンマー)
+		return h.obtainCards(tx, userID, requestAt, []int64{itemID})
 
 	case 3, 4: // 強化素材
 		query := "SELECT * FROM item_masters WHERE id=? AND item_type=?"
@@ -1335,7 +1351,10 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	receivedIDs := make([]int64, len(obtainPresent))
 
 	// 配布処理
-	var coinAmount int64
+	var (
+		coinAmount int64
+		cardIDs    []int64
+	)
 	for i := range obtainPresent {
 		receivedIDs[i] = obtainPresent[i].ID
 
@@ -1347,21 +1366,22 @@ func (h *Handler) receivePresent(c echo.Context) error {
 		obtainPresent[i].DeletedAt = &requestAt
 		v := obtainPresent[i]
 
-		// coin
-		if v.ItemType == 1 {
+		switch v.ItemType {
+		case 1: // coin
 			coinAmount += int64(v.Amount)
-			continue
-		}
-
-		err = h.obtainItem(tx, v.UserID, v.ItemID, v.ItemType, int64(v.Amount), requestAt)
-		if err != nil {
-			if err == ErrUserNotFound || err == ErrItemNotFound {
-				return errorResponse(c, http.StatusNotFound, err)
+		case 2: // card
+			cardIDs = append(cardIDs, v.ItemID)
+		default:
+			err = h.obtainItem(tx, v.UserID, v.ItemID, v.ItemType, int64(v.Amount), requestAt)
+			if err != nil {
+				if err == ErrUserNotFound || err == ErrItemNotFound {
+					return errorResponse(c, http.StatusNotFound, err)
+				}
+				if err == ErrInvalidItemType {
+					return errorResponse(c, http.StatusBadRequest, err)
+				}
+				return errorResponse(c, http.StatusInternalServerError, err)
 			}
-			if err == ErrInvalidItemType {
-				return errorResponse(c, http.StatusBadRequest, err)
-			}
-			return errorResponse(c, http.StatusInternalServerError, err)
 		}
 	}
 
@@ -1374,6 +1394,15 @@ func (h *Handler) receivePresent(c echo.Context) error {
 	}
 
 	if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
+		if err == ErrUserNotFound || err == ErrItemNotFound {
+			return errorResponse(c, http.StatusNotFound, err)
+		}
+		if err == ErrInvalidItemType {
+			return errorResponse(c, http.StatusBadRequest, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+	if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
 		if err == ErrUserNotFound || err == ErrItemNotFound {
 			return errorResponse(c, http.StatusNotFound, err)
 		}
