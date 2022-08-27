@@ -677,6 +677,8 @@ func initialize(c echo.Context) error {
 	errCh := make(chan error, len(dbHosts))
 	wg := sync.WaitGroup{}
 
+	defer close(errCh)
+
 	for _, host := range dbHosts {
 		wg.Add(1)
 		go func(host string) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
@@ -223,17 +224,45 @@ type AdminListMasterResponse struct {
 // adminUpdateMaster マスタデータ更新
 // PUT /admin/master
 func (h *Handler) adminUpdateMaster(c echo.Context) error {
-	// for _, db := range dbs {
-	// 	if err := h._adminUpdateMaster(c, db); err != nil {
-	// 		return err
-	// 	}
-	// }
-	return h._adminUpdateMaster(c, selectDatabase(0))
+	wg := sync.WaitGroup{}
+	errCh := make(chan struct {
+		code int
+		err  error
+	}, len(dbs))
+	respCh := make(chan *AdminUpdateMasterResponse, len(dbs))
+
+	defer close(errCh)
+	defer close(respCh)
+
+	for _, db := range dbs {
+		wg.Add(1)
+		go func(db *sqlx.DB) {
+			defer wg.Done()
+
+			resp, code, err := h._adminUpdateMaster(c, db)
+			if err != nil {
+				errCh <- struct {
+					code int
+					err  error
+				}{code, err}
+				return
+			}
+			respCh <- resp
+		}(db)
+	}
+
+	wg.Wait()
+	if len(errCh) > 0 {
+		err := <-errCh
+		return errorResponse(c, err.code, err.err)
+	}
+
+	return successResponse(c, <-respCh)
 }
-func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
+func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) (*AdminUpdateMasterResponse, int, error) {
 	tx, err := targetDb.Beginx()
 	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+		return nil, http.StatusInternalServerError, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -241,7 +270,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	versionMasterRecs, err := readFormFileToCSV(c, "versionMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if versionMasterRecs != nil {
@@ -259,7 +288,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 
 		query := "INSERT INTO version_masters(id, status, master_version) VALUES (:id, :status, :master_version) ON DUPLICATE KEY UPDATE status=VALUES(status), master_version=VALUES(master_version)"
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: versionMaster")
@@ -269,7 +298,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	itemMasterRecs, err := readFormFileToCSV(c, "itemMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if itemMasterRecs != nil {
@@ -298,7 +327,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 			"ON DUPLICATE KEY UPDATE item_type=VALUES(item_type), name=VALUES(name), description=VALUES(description), amount_per_sec=VALUES(amount_per_sec), max_level=VALUES(max_level), max_amount_per_sec=VALUES(max_amount_per_sec), base_exp_per_level=VALUES(base_exp_per_level), gained_exp=VALUES(gained_exp), shortening_min=VALUES(shortening_min)",
 		}, " ")
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: itemMaster")
@@ -308,7 +337,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	gachaRecs, err := readFormFileToCSV(c, "gachaMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if gachaRecs != nil {
@@ -333,7 +362,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 			"ON DUPLICATE KEY UPDATE name=VALUES(name), start_at=VALUES(start_at), end_at=VALUES(end_at), display_order=VALUES(display_order), created_at=VALUES(created_at)",
 		}, " ")
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: gachaMaster")
@@ -343,7 +372,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	gachaItemRecs, err := readFormFileToCSV(c, "gachaItemMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if gachaItemRecs != nil {
@@ -369,7 +398,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 			"ON DUPLICATE KEY UPDATE gacha_id=VALUES(gacha_id), item_type=VALUES(item_type), item_id=VALUES(item_id), amount=VALUES(amount), weight=VALUES(weight), created_at=VALUES(created_at)",
 		}, " ")
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: gachaItemMaster")
@@ -379,7 +408,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	presentAllRecs, err := readFormFileToCSV(c, "presentAllMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if presentAllRecs != nil {
@@ -406,7 +435,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 			"ON DUPLICATE KEY UPDATE registered_start_at=VALUES(registered_start_at), registered_end_at=VALUES(registered_end_at), item_type=VALUES(item_type), item_id=VALUES(item_id), amount=VALUES(amount), present_message=VALUES(present_message), created_at=VALUES(created_at)",
 		}, " ")
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: presentAllMaster")
@@ -416,7 +445,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	loginBonusRecs, err := readFormFileToCSV(c, "loginBonusMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if loginBonusRecs != nil {
@@ -445,7 +474,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 			"ON DUPLICATE KEY UPDATE start_at=VALUES(start_at), end_at=VALUES(end_at), column_count=VALUES(column_count), looped=VALUES(looped), created_at=VALUES(created_at)",
 		}, " ")
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: loginBonusMaster")
@@ -455,7 +484,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 	loginBonusRewardRecs, err := readFormFileToCSV(c, "loginBonusRewardMaster")
 	if err != nil {
 		if err != ErrNoFormFile {
-			return errorResponse(c, http.StatusBadRequest, err)
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	if loginBonusRewardRecs != nil {
@@ -481,7 +510,7 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 			"ON DUPLICATE KEY UPDATE login_bonus_id=VALUES(login_bonus_id), reward_sequence=VALUES(reward_sequence), item_type=VALUES(item_type), item_id=VALUES(item_id), amount=VALUES(amount), created_at=VALUES(created_at)",
 		}, " ")
 		if _, err = tx.NamedExec(query, data); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			return nil, http.StatusInternalServerError, err
 		}
 	} else {
 		c.Logger().Debug("Skip Update Master: loginBonusRewardMaster")
@@ -489,17 +518,17 @@ func (h *Handler) _adminUpdateMaster(c echo.Context, targetDb *sqlx.DB) error {
 
 	activeMaster := new(VersionMaster)
 	if err = tx.Get(activeMaster, "SELECT * FROM version_masters WHERE status=1"); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+		return nil, http.StatusInternalServerError, err
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+		return nil, http.StatusInternalServerError, err
 	}
 
-	return successResponse(c, &AdminUpdateMasterResponse{
+	return &AdminUpdateMasterResponse{
 		VersionMaster: activeMaster,
-	})
+	}, 0, nil
 }
 
 type AdminUpdateMasterResponse struct {
