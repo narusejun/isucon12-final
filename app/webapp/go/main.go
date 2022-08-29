@@ -52,7 +52,9 @@ const (
 )
 
 var (
-	userBanCache = cmap.New[struct{}]()
+	userBanCache    = cmap.New[struct{}]()
+	sessionCache    = cmap.New[*Session]()
+	sessionIDsCache = cmap.New[[]string]()
 )
 
 func resetCache() {
@@ -246,12 +248,32 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 	}
 
 	userSession := new(Session)
-	query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
-	if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+	if isIchidai {
+		var ok bool
+		userSession, ok = sessionCache.Get(sessID)
+		if !ok {
+			query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
+			if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
+				if err == sql.ErrNoRows {
+					return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+				}
+				return errorResponse(c, http.StatusInternalServerError, err)
+			}
+			sessionCache.Set(sessID, userSession)
+			sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
+			if !ok {
+				sessIDs = []string{}
+			}
+			sessionIDsCache.Set(sesssionUserIDStrs[1], append(sessIDs, sessID))
 		}
-		return errorResponse(c, http.StatusInternalServerError, err)
+	} else {
+		query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
+		if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
+			if err == sql.ErrNoRows {
+				return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+			}
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
 	}
 
 	if userSession.UserID != userID {
@@ -259,7 +281,19 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 	}
 
 	if userSession.ExpiredAt < requestAt {
-		query = "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
+		sessionCache.Remove(sessID)
+		sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
+		if ok {
+			newSessIDs := make([]string, 0, len(sessIDs))
+			for i := 0; i < len(sessIDs); i++ {
+				if sessID != sessIDs[i] {
+					newSessIDs = append(newSessIDs, sessIDs[i])
+				}
+			}
+			sessionIDsCache.Set(sesssionUserIDStrs[1], newSessIDs)
+		}
+
+		query := "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
 		if _, err = selectDatabase(userID).Exec(query, requestAt, sessID); err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
@@ -417,8 +451,9 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		return nil, errors.WithStack(err)
 	}
 	progress := make(map[int64]*UserLoginBonus, len(_progress))
-	for _, bonus := range _progress {
-		progress[bonus.LoginBonusID] = bonus
+	//for _, bonus := range _progress {
+	for i := 0; i < len(_progress); i++ {
+		progress[_progress[i].LoginBonusID] = _progress[i]
 	}
 
 	initBonuses, _f1 := userLoginBonusArrPool.get()
@@ -429,8 +464,9 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	rewards, _f5 := loginBonusRewardMasterArrPool.get()
 	defer _f5()
 
-	for _, bonus := range loginBonuses {
-		userBonus := progress[bonus.ID]
+	//for _, bonus := range loginBonuses {
+	for i := 0; i < len(loginBonuses); i++ {
+		userBonus := progress[loginBonuses[i].ID]
 		if userBonus == nil {
 			ubID, err := h.generateID()
 			if err != nil {
@@ -439,7 +475,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 			userBonus = &UserLoginBonus{ // ボーナス初期化
 				ID:                 ubID,
 				UserID:             userID,
-				LoginBonusID:       bonus.ID,
+				LoginBonusID:       loginBonuses[i].ID,
 				LastRewardSequence: 1,
 				LoopCount:          1,
 				CreatedAt:          requestAt,
@@ -448,10 +484,10 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 			initBonuses = append(initBonuses, userBonus)
 		} else {
 			// ボーナス進捗更新
-			if userBonus.LastRewardSequence < bonus.ColumnCount {
+			if userBonus.LastRewardSequence < loginBonuses[i].ColumnCount {
 				userBonus.LastRewardSequence++
 			} else {
-				if bonus.Looped {
+				if loginBonuses[i].Looped {
 					userBonus.LoopCount += 1
 					userBonus.LastRewardSequence = 1
 				} else {
@@ -465,7 +501,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		sendLoginBonuses = append(sendLoginBonuses, userBonus)
 
 		// 今回付与するリソース取得
-		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence(bonus.ID, userBonus.LastRewardSequence)
+		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence(loginBonuses[i].ID, userBonus.LastRewardSequence)
 		if !ok {
 			return nil, ErrLoginBonusRewardNotFound
 		}
@@ -480,8 +516,9 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	}
 	if len(progressBonuses) > 0 {
 		query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
-		for _, userBonus := range progressBonuses {
-			if _, err = tx.Exec(query, userBonus.LastRewardSequence, userBonus.LoopCount, userBonus.UpdatedAt, userBonus.ID); err != nil {
+		//for _, userBonus := range progressBonuses {
+		for i := 0; i < len(progressBonuses); i++ {
+			if _, err = tx.Exec(query, progressBonuses[i].LastRewardSequence, progressBonuses[i].LoopCount, progressBonuses[i].UpdatedAt, progressBonuses[i].ID); err != nil {
 				return nil, errors.WithStack(err)
 			}
 		}
@@ -552,8 +589,9 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	obtainPresents := make([]*UserPresent, 0)
 	history, _f2 := userPresentAllReceivedHistoryArrPool.get()
 	defer _f2()
-	for _, np := range normalPresents {
-		if receivedIds[np.ID] {
+	//for _, np := range normalPresents {
+	for i := 0; i < len(normalPresents); i++ {
+		if receivedIds[normalPresents[i].ID] {
 			continue
 		}
 
@@ -571,17 +609,17 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 			ID:             pID,
 			UserID:         userID,
 			SentAt:         requestAt,
-			ItemType:       np.ItemType,
-			ItemID:         np.ItemID,
-			Amount:         int(np.Amount),
-			PresentMessage: np.PresentMessage,
+			ItemType:       normalPresents[i].ItemType,
+			ItemID:         normalPresents[i].ItemID,
+			Amount:         int(normalPresents[i].Amount),
+			PresentMessage: normalPresents[i].PresentMessage,
 			CreatedAt:      requestAt,
 			UpdatedAt:      requestAt,
 		}
 		h := &UserPresentAllReceivedHistory{
 			ID:           phID,
 			UserID:       userID,
-			PresentAllID: np.ID,
+			PresentAllID: normalPresents[i].ID,
 			ReceivedAt:   requestAt,
 			CreatedAt:    requestAt,
 			UpdatedAt:    requestAt,
@@ -937,6 +975,14 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 86400,
 	}
+	sessionCache.Set(sess.SessionID, sess)
+
+	userIDstr := strconv.Itoa(int(user.ID))
+	sessIDs, ok := sessionIDsCache.Get(userIDstr)
+	if !ok {
+		sessIDs = []string{}
+	}
+	sessionIDsCache.Set(userIDstr, append(sessIDs, sessID))
 	query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
 	if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1015,6 +1061,15 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	// sessionを更新
+	sessIDs, ok := sessionIDsCache.Get(strconv.Itoa(int(user.ID)))
+	if ok {
+		for i := 0; i < len(sessIDs); i++ {
+			_, ok := sessionCache.Get(sessIDs[i])
+			if ok {
+				sessionCache.Remove(sessIDs[i])
+			}
+		}
+	}
 	query = "UPDATE user_sessions SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
 	if _, err = tx.Exec(query, requestAt, req.UserID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1035,6 +1090,14 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 86400,
 	}
+	sessionCache.Set(sess.SessionID, sess)
+
+	userIDstr := strconv.Itoa(int(user.ID))
+	sessIDs, ok = sessionIDsCache.Get(userIDstr)
+	if !ok {
+		sessIDs = []string{}
+	}
+	sessionIDsCache.Set(userIDstr, append(sessIDs, sessID))
 	query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
 	if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
