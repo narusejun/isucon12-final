@@ -23,6 +23,8 @@ func connectDatabase(host string) (*sqlx.DB, error) {
 		false,
 	)
 	dbx, err := sqlx.Open("mysql", dsn)
+	dbx.SetMaxOpenConns(64)
+	dbx.SetMaxIdleConns(64)
 	if err != nil {
 		return nil, err
 	}
