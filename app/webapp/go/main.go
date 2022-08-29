@@ -54,7 +54,7 @@ const (
 var (
 	userBanCache    = cmap.New[struct{}]()
 	sessionCache    = cmap.New[*Session]()
-	sessionIDsCache = cmap.New[[]string]()
+	sessionIDsCache = cmap.New[*[]string]()
 )
 
 func resetCache() {
@@ -75,6 +75,7 @@ func main() {
 		// Prefork:      true,
 		JSONEncoder: json.Marshal,
 		JSONDecoder: json.Unmarshal,
+		Concurrency: 1000000,
 	})
 
 	//idx := 0
@@ -248,7 +249,8 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	userSession := new(Session)
+	userSession := sessionPool.get()
+	defer sessionPool.put(userSession)
 	if isIchidai {
 		var ok bool
 		userSession, ok = sessionCache.Get(sessID)
@@ -263,9 +265,10 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 			sessionCache.Set(sessID, userSession)
 			sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
 			if !ok {
-				sessIDs = []string{}
+				sessIDs = stringArrPool.get()
 			}
-			sessionIDsCache.Set(sesssionUserIDStrs[1], append(sessIDs, sessID))
+			*sessIDs = append(*sessIDs, sessID)
+			sessionIDsCache.Set(sesssionUserIDStrs[1], sessIDs)
 		}
 	} else {
 		query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
@@ -285,13 +288,14 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		sessionCache.Remove(sessID)
 		sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
 		if ok {
-			newSessIDs := make([]string, 0, len(sessIDs))
-			for i := 0; i < len(sessIDs); i++ {
-				if sessID != sessIDs[i] {
-					newSessIDs = append(newSessIDs, sessIDs[i])
+			newSessIDs := stringArrPool.get()
+			for i := 0; i < len(*sessIDs); i++ {
+				if sessID != (*sessIDs)[i] {
+					*newSessIDs = append(*newSessIDs, (*sessIDs)[i])
 				}
 			}
 			sessionIDsCache.Set(sesssionUserIDStrs[1], newSessIDs)
+			stringArrPool.put(sessIDs)
 		}
 
 		query := "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
@@ -307,7 +311,8 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 
 // checkOneTimeToken
 func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, requestAt int64) error {
-	tk := new(UserOneTimeToken)
+	tk := userOneTimeTokenPool.get()
+	defer userOneTimeTokenPool.put(tk)
 	query := "SELECT * FROM user_one_time_tokens WHERE token=? AND token_type=? AND deleted_at IS NULL"
 	if err := selectDatabase(userID).Get(tk, query, token, tokenType); err != nil {
 		if err == sql.ErrNoRows {
@@ -336,7 +341,8 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 // checkViewerID
 func (h *Handler) checkViewerID(userID int64, viewerID string) error {
 	query := "SELECT * FROM user_devices WHERE user_id=? AND platform_id=?"
-	device := new(UserDevice)
+	device := userDevicePool.get()
+	defer userDevicePool.put(device)
 	if err := selectDatabase(userID).Get(device, query, userID, viewerID); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrUserDeviceNotFound
@@ -436,34 +442,34 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	}
 
 	// ボーナスの進捗を全取得
-	loginBonusIds, _f4 := int64ArrPool.get()
-	defer _f4()
+	loginBonusIds := int64ArrPool.get()
+	defer int64ArrPool.put(loginBonusIds)
 	for i := range loginBonuses {
-		loginBonusIds = append(loginBonusIds, loginBonuses[i].ID)
+		*loginBonusIds = append(*loginBonusIds, loginBonuses[i].ID)
 	}
 	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
-	query, params, err := sqlx.In(query, userID, loginBonusIds)
+	query, params, err := sqlx.In(query, userID, *loginBonusIds)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	_progress, _f0 := userLoginBonusArrPool.get()
-	defer _f0()
-	if err := tx.Select(&_progress, query, params...); err != nil {
+	_progress := userLoginBonusArrPool.get()
+	defer userLoginBonusArrPool.put(_progress)
+	if err := tx.Select(_progress, query, params...); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	progress := make(map[int64]*UserLoginBonus, len(_progress))
+	progress := make(map[int64]*UserLoginBonus, len(*_progress))
 	//for _, bonus := range _progress {
-	for i := 0; i < len(_progress); i++ {
-		progress[_progress[i].LoginBonusID] = _progress[i]
+	for i := 0; i < len(*_progress); i++ {
+		progress[(*_progress)[i].LoginBonusID] = (*_progress)[i]
 	}
 
-	initBonuses, _f1 := userLoginBonusArrPool.get()
-	defer _f1()
-	progressBonuses, _f2 := userLoginBonusArrPool.get()
-	defer _f2()
+	initBonuses := userLoginBonusArrPool.get()
+	defer userLoginBonusArrPool.put(initBonuses)
+	progressBonuses := userLoginBonusArrPool.get()
+	defer userLoginBonusArrPool.put(progressBonuses)
 	sendLoginBonuses := make([]*UserLoginBonus, 0)
-	rewards, _f5 := loginBonusRewardMasterArrPool.get()
-	defer _f5()
+	rewards := loginBonusRewardMasterArrPool.get()
+	defer loginBonusRewardMasterArrPool.put(rewards)
 
 	//for _, bonus := range loginBonuses {
 	for i := 0; i < len(loginBonuses); i++ {
@@ -482,7 +488,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 				CreatedAt:          requestAt,
 				UpdatedAt:          requestAt,
 			}
-			initBonuses = append(initBonuses, userBonus)
+			*initBonuses = append(*initBonuses, userBonus)
 		} else {
 			// ボーナス進捗更新
 			if userBonus.LastRewardSequence < loginBonuses[i].ColumnCount {
@@ -497,7 +503,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 				}
 			}
 			userBonus.UpdatedAt = requestAt
-			progressBonuses = append(progressBonuses, userBonus)
+			*progressBonuses = append(*progressBonuses, userBonus)
 		}
 		sendLoginBonuses = append(sendLoginBonuses, userBonus)
 
@@ -506,40 +512,40 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		if !ok {
 			return nil, ErrLoginBonusRewardNotFound
 		}
-		rewards = append(rewards, &rewardItem)
+		*rewards = append(*rewards, &rewardItem)
 	}
 
-	if len(initBonuses) > 0 {
+	if len(*initBonuses) > 0 {
 		query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (:id, :user_id, :login_bonus_id, :last_reward_sequence, :loop_count, :created_at, :updated_at)"
-		if _, err = tx.NamedExec(query, initBonuses); err != nil {
+		if _, err = tx.NamedExec(query, *initBonuses); err != nil {
 			return nil, errors.WithStack(err)
 		}
 	}
-	if len(progressBonuses) > 0 {
+	if len(*progressBonuses) > 0 {
 		query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
 		//for _, userBonus := range progressBonuses {
-		for i := 0; i < len(progressBonuses); i++ {
-			if _, err = tx.Exec(query, progressBonuses[i].LastRewardSequence, progressBonuses[i].LoopCount, progressBonuses[i].UpdatedAt, progressBonuses[i].ID); err != nil {
+		for i := 0; i < len(*progressBonuses); i++ {
+			if _, err = tx.Exec(query, (*progressBonuses)[i].LastRewardSequence, (*progressBonuses)[i].LoopCount, (*progressBonuses)[i].UpdatedAt, (*progressBonuses)[i].ID); err != nil {
 				return nil, errors.WithStack(err)
 			}
 		}
 	}
-	if len(rewards) > 0 {
+	if len(*rewards) > 0 {
 		var (
 			coinAmount int64
 			cardIDs    []int64
 			item45s    []obtain45Item
 		)
-		for i := range rewards {
-			switch rewards[i].ItemType {
+		for i := range *rewards {
+			switch (*rewards)[i].ItemType {
 			case 1: // coin
-				coinAmount += rewards[i].Amount
+				coinAmount += (*rewards)[i].Amount
 			case 2: // card
-				cardIDs = append(cardIDs, rewards[i].ItemID)
+				cardIDs = append(cardIDs, (*rewards)[i].ItemID)
 			default:
 				item45s = append(item45s, obtain45Item{
-					itemID:       rewards[i].ItemID,
-					obtainAmount: rewards[i].Amount,
+					itemID:       (*rewards)[i].ItemID,
+					obtainAmount: (*rewards)[i].Amount,
 				})
 			}
 		}
@@ -573,23 +579,23 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		ids[i] = normalPresents[i].ID
 	}
 
-	received, _f1 := userPresentAllReceivedHistoryArrPool.get()
-	defer _f1()
+	received := userPresentAllReceivedHistoryArrPool.get()
+	defer userPresentAllReceivedHistoryArrPool.put(received)
 	q, params, err := sqlx.In("SELECT present_all_id FROM user_present_all_received_history WHERE user_id=? AND present_all_id IN (?)", userID, ids)
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Select(&received, q, params...); err != nil {
+	if err := tx.Select(received, q, params...); err != nil {
 		return nil, err
 	}
-	receivedIds := make(map[int64]bool, len(received))
-	for i := range received {
-		receivedIds[received[i].PresentAllID] = true
+	receivedIds := make(map[int64]bool, len(*received))
+	for i := range *received {
+		receivedIds[(*received)[i].PresentAllID] = true
 	}
 
 	obtainPresents := make([]*UserPresent, 0)
-	history, _f2 := userPresentAllReceivedHistoryArrPool.get()
-	defer _f2()
+	history := userPresentAllReceivedHistoryArrPool.get()
+	defer userPresentAllReceivedHistoryArrPool.put(history)
 	//for _, np := range normalPresents {
 	for i := 0; i < len(normalPresents); i++ {
 		if receivedIds[normalPresents[i].ID] {
@@ -626,7 +632,7 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 			UpdatedAt:    requestAt,
 		}
 		obtainPresents = append(obtainPresents, up)
-		history = append(history, h)
+		*history = append(*history, h)
 	}
 
 	if len(obtainPresents) == 0 {
@@ -642,7 +648,7 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	}
 	_, err = tx.NamedExec(
 		"INSERT INTO user_present_all_received_history(id, user_id, present_all_id, received_at, created_at, updated_at) VALUES (:id, :user_id, :present_all_id, :received_at, :created_at, :updated_at)",
-		history,
+		*history,
 	)
 	if err != nil {
 		return nil, err
@@ -662,9 +668,9 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		return nil
 	}
 
-	items, _f0 := itemMasterArrPool.get()
-	defer _f0()
-	itemAmountPerSecMap := make(map[int64]int, len(items))
+	items := itemMasterArrPool.get()
+	defer itemMasterArrPool.put(items)
+	itemAmountPerSecMap := make(map[int64]int, len(*items))
 	for _, itemID := range itemIDs {
 		ok, item := getItemMasterByID(itemID)
 		if !ok {
@@ -673,14 +679,14 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 		itemAmountPerSecMap[item.ID] = *item.AmountPerSec
 	}
 
-	cards, _f1 := userCardArrPool.get()
-	defer _f1()
+	cards := userCardArrPool.get()
+	defer userCardArrPool.put(cards)
 	for _, id := range itemIDs {
 		cID, err := h.generateID()
 		if err != nil {
 			return err
 		}
-		cards = append(cards, &UserCard{
+		*cards = append(*cards, &UserCard{
 			ID:           cID,
 			UserID:       userID,
 			CardID:       id,
@@ -693,7 +699,7 @@ func (h *Handler) obtainCards(tx *sqlx.Tx, userID, requestAt int64, itemIDs []in
 	}
 
 	q := "INSERT INTO user_cards(id, user_id, card_id, amount_per_sec, level, total_exp, created_at, updated_at) VALUES (:id, :user_id, :card_id, :amount_per_sec, :level, :total_exp, :created_at, :updated_at)"
-	_, err := tx.NamedExec(q, cards)
+	_, err := tx.NamedExec(q, *cards)
 	return err
 }
 
@@ -723,18 +729,18 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 	if err != nil {
 		return err
 	}
-	_userItems, _f0 := userItemsArrPool.get()
-	defer _f0()
-	if err := tx.Select(&_userItems, q, params...); err != nil {
+	_userItems := userItemsArrPool.get()
+	defer userItemsArrPool.put(_userItems)
+	if err := tx.Select(_userItems, q, params...); err != nil {
 		return err
 	}
-	userItems := make(map[int64]*UserItem, len(_userItems))
-	for _, item := range _userItems {
+	userItems := make(map[int64]*UserItem, len(*_userItems))
+	for _, item := range *_userItems {
 		userItems[item.ItemID] = item
 	}
 
-	blkInserts, _f1 := userItemsArrPool.get()
-	defer _f1()
+	blkInserts := userItemsArrPool.get()
+	defer userItemsArrPool.put(blkInserts)
 	blkUpdates := make(map[int64]int)
 	for _, tmp := range items {
 		if userItems[tmp.itemID] == nil {
@@ -744,7 +750,7 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 				return err
 			}
 			item := itemMasters[tmp.itemID]
-			blkInserts = append(blkInserts, &UserItem{
+			*blkInserts = append(*blkInserts, &UserItem{
 				ID:        uitemID,
 				UserID:    userID,
 				ItemType:  item.ItemType,
@@ -758,9 +764,9 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 		}
 	}
 
-	if len(blkInserts) > 0 {
+	if len(*blkInserts) > 0 {
 		q = "INSERT INTO user_items(id, user_id, item_id, item_type, amount, created_at, updated_at) VALUES (:id, :user_id, :item_id, :item_type, :amount, :created_at, :updated_at)"
-		_, err = tx.NamedExec(q, blkInserts)
+		_, err = tx.NamedExec(q, *blkInserts)
 		if err != nil {
 			return err
 		}
@@ -842,7 +848,8 @@ type InitializeResponse struct {
 // POST /user
 func (h *Handler) createUser(c *fiber.Ctx) error {
 	// parse body
-	req := new(CreateUserRequest)
+	req := createUserRequestPool.get()
+	defer createUserRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -981,9 +988,10 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 	userIDstr := strconv.Itoa(int(user.ID))
 	sessIDs, ok := sessionIDsCache.Get(userIDstr)
 	if !ok {
-		sessIDs = []string{}
+		sessIDs = stringArrPool.get()
 	}
-	sessionIDsCache.Set(userIDstr, append(sessIDs, sessID))
+	*sessIDs = append(*sessIDs, sess.SessionID)
+	sessionIDsCache.Set(userIDstr, sessIDs)
 	query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
 	if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1019,7 +1027,8 @@ type CreateUserResponse struct {
 // login ログイン
 // POST /login
 func (h *Handler) login(c *fiber.Ctx) error {
-	req := new(LoginRequest)
+	req := loginRequestPool.get()
+	defer loginRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1029,7 +1038,8 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	user := new(User)
+	user := userPool.get()
+	defer userPool.put(user)
 	query := "SELECT * FROM users WHERE id=?"
 	if err := selectDatabase(req.UserID).Get(user, query, req.UserID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1064,10 +1074,10 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	// sessionを更新
 	sessIDs, ok := sessionIDsCache.Get(strconv.Itoa(int(user.ID)))
 	if ok {
-		for i := 0; i < len(sessIDs); i++ {
-			_, ok := sessionCache.Get(sessIDs[i])
+		for i := 0; i < len(*sessIDs); i++ {
+			_, ok := sessionCache.Get((*sessIDs)[i])
 			if ok {
-				sessionCache.Remove(sessIDs[i])
+				sessionCache.Remove((*sessIDs)[i])
 			}
 		}
 	}
@@ -1096,9 +1106,10 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	userIDstr := strconv.Itoa(int(user.ID))
 	sessIDs, ok = sessionIDsCache.Get(userIDstr)
 	if !ok {
-		sessIDs = []string{}
+		sessIDs = stringArrPool.get()
 	}
-	sessionIDsCache.Set(userIDstr, append(sessIDs, sessID))
+	*sessIDs = append(*sessIDs, sessID)
+	sessionIDsCache.Set(userIDstr, sessIDs)
 	query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
 	if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1127,7 +1138,7 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	}
 
 	// login process
-	user, loginBonuses, presents, err := h.loginProcess(tx, req.UserID, requestAt)
+	user2, loginBonuses, presents, err := h.loginProcess(tx, req.UserID, requestAt)
 	if err != nil {
 		if err == ErrUserNotFound || err == ErrItemNotFound || err == ErrLoginBonusRewardNotFound {
 			return errorResponse(c, http.StatusNotFound, err)
@@ -1146,7 +1157,7 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	return successResponse(c, &LoginResponse{
 		ViewerID:         req.ViewerID,
 		SessionID:        sess.SessionID,
-		UpdatedResources: makeUpdatedResources(requestAt, user, nil, nil, nil, nil, loginBonuses, presents),
+		UpdatedResources: makeUpdatedResources(requestAt, user2, nil, nil, nil, nil, loginBonuses, presents),
 	})
 }
 
@@ -1261,7 +1272,8 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid draw gacha times"))
 	}
 
-	req := new(DrawGachaRequest)
+	req := drawGachaRequestPool.get()
+	defer drawGachaRequestPool.put(req)
 	if err = parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1288,7 +1300,8 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	consumedCoin := int64(gachaCount * 1000)
 
 	// userのisuconが足りるか
-	user := new(User)
+	user := userPool.get()
+	defer userPool.put(user)
 	query := "SELECT * FROM users WHERE id=?"
 	if err := selectDatabase(userID).Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1347,8 +1360,8 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	// 直付与 => プレゼントに入れる
-	presents, _f0 := userPresentArrPool.get()
-	defer _f0()
+	presents := userPresentArrPool.get()
+	defer userPresentArrPool.put(presents)
 	for _, v := range result {
 		pID, err := h.generateID()
 		if err != nil {
@@ -1365,11 +1378,11 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 			CreatedAt:      requestAt,
 			UpdatedAt:      requestAt,
 		}
-		presents = append(presents, present)
+		*presents = append(*presents, present)
 	}
 
 	query = "INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)"
-	if _, err := tx.NamedExec(query, presents); err != nil {
+	if _, err := tx.NamedExec(query, *presents); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -1386,7 +1399,7 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	}
 
 	return successResponse(c, &DrawGachaResponse{
-		Presents: presents,
+		Presents: *presents,
 	})
 }
 
@@ -1416,23 +1429,23 @@ func (h *Handler) listPresent(c *fiber.Ctx) error {
 	}
 
 	offset := PresentCountPerPage * (n - 1)
-	presentList, _f0 := userPresentArrPool.get()
-	defer _f0()
+	presentList := userPresentArrPool.get()
+	defer userPresentArrPool.put(presentList)
 	query := `
 	SELECT * FROM user_presents
 	WHERE user_id = ? AND deleted_at IS NULL
 	ORDER BY created_at DESC, id
 	LIMIT ? OFFSET ?`
-	if err = selectDatabase(userID).Select(&presentList, query, userID, PresentCountPerPage+1, offset); err != nil {
+	if err = selectDatabase(userID).Select(presentList, query, userID, PresentCountPerPage+1, offset); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	isNext := len(presentList) == PresentCountPerPage+1
+	isNext := len(*presentList) == PresentCountPerPage+1
 	if isNext {
-		presentList = presentList[:PresentCountPerPage]
+		*presentList = (*presentList)[:PresentCountPerPage]
 	}
 	return successResponse(c, &ListPresentResponse{
-		Presents: presentList,
+		Presents: *presentList,
 		IsNext:   isNext,
 	})
 }
@@ -1446,7 +1459,8 @@ type ListPresentResponse struct {
 // POST /user/{userID}/present/receive
 func (h *Handler) receivePresent(c *fiber.Ctx) error {
 	// read body
-	req := new(ReceivePresentRequest)
+	req := receivePresentRequestPool.get()
+	defer receivePresentRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1478,13 +1492,13 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
-	obtainPresent, _f0 := userPresentArrPool.get()
-	defer _f0()
-	if err = selectDatabase(userID).Select(&obtainPresent, query, params...); err != nil {
+	obtainPresent := userPresentArrPool.get()
+	defer userPresentArrPool.put(obtainPresent)
+	if err = selectDatabase(userID).Select(obtainPresent, query, params...); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
-	if len(obtainPresent) == 0 {
+	if len(*obtainPresent) == 0 {
 		return successResponse(c, &ReceivePresentResponse{
 			UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, zeroUserPresentArr),
 		})
@@ -1503,19 +1517,19 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		cardIDs    []int64
 		item45s    []obtain45Item
 	)
-	for i := range obtainPresent {
-		presentIDs = append(presentIDs, obtainPresent[i].ID)
-		obtainPresent[i].UpdatedAt = requestAt
-		obtainPresent[i].DeletedAt = &requestAt
-		switch obtainPresent[i].ItemType {
+	for i := range *obtainPresent {
+		presentIDs = append(presentIDs, (*obtainPresent)[i].ID)
+		(*obtainPresent)[i].UpdatedAt = requestAt
+		(*obtainPresent)[i].DeletedAt = &requestAt
+		switch (*obtainPresent)[i].ItemType {
 		case 1: // coin
-			coinAmount += int64(obtainPresent[i].Amount)
+			coinAmount += int64((*obtainPresent)[i].Amount)
 		case 2: // card
-			cardIDs = append(cardIDs, obtainPresent[i].ItemID)
+			cardIDs = append(cardIDs, (*obtainPresent)[i].ItemID)
 		default:
 			item45s = append(item45s, obtain45Item{
-				itemID:       obtainPresent[i].ItemID,
-				obtainAmount: int64(obtainPresent[i].Amount),
+				itemID:       (*obtainPresent)[i].ItemID,
+				obtainAmount: int64((*obtainPresent)[i].Amount),
 			})
 		}
 	}
@@ -1565,7 +1579,7 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 	}
 
 	return successResponse(c, &ReceivePresentResponse{
-		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, obtainPresent),
+		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, *obtainPresent),
 	})
 }
 
@@ -1591,7 +1605,8 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	user := new(User)
+	user := userPool.get()
+	defer userPool.put(user)
 	query := "SELECT * FROM users WHERE id=?"
 	if err = selectDatabase(userID).Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1600,17 +1615,17 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	itemList, _f0 := userItemsArrPool.get()
-	defer _f0()
+	itemList := userItemsArrPool.get()
+	defer userItemsArrPool.put(itemList)
 	query = "SELECT * FROM user_items WHERE user_id = ?"
-	if err = selectDatabase(userID).Select(&itemList, query, userID); err != nil {
+	if err = selectDatabase(userID).Select(itemList, query, userID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	cardList, _f1 := userCardArrPool.get()
-	defer _f1()
+	cardList := userCardArrPool.get()
+	defer userCardArrPool.put(cardList)
 	query = "SELECT * FROM user_cards WHERE user_id=?"
-	if err = selectDatabase(userID).Select(&cardList, query, userID); err != nil {
+	if err = selectDatabase(userID).Select(cardList, query, userID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -1643,9 +1658,9 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 
 	return successResponse(c, &ListItemResponse{
 		OneTimeToken: token.Token,
-		Items:        itemList,
+		Items:        *itemList,
 		User:         user,
-		Cards:        cardList,
+		Cards:        *cardList,
 	})
 }
 
@@ -1670,7 +1685,8 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	}
 
 	// read body
-	req := new(AddExpToCardRequest)
+	req := addExpToCardRequestPool.get()
+	defer addExpToCardRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1695,7 +1711,8 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	}
 
 	// get target card
-	card := new(TargetUserCardData)
+	card := targetUserCardDataPool.get()
+	defer targetUserCardDataPool.put(card)
 	query := `
 	SELECT uc.id , uc.user_id , uc.card_id , uc.amount_per_sec , uc.level, uc.total_exp, im.amount_per_sec as 'base_amount_per_sec', im.max_level , im.max_amount_per_sec , im.base_exp_per_level
 	FROM user_cards as uc
@@ -1722,7 +1739,8 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	WHERE ui.item_type = 3 AND ui.id=? AND ui.user_id=?
 	`
 	for _, v := range req.Items {
-		item := new(ConsumeUserItemData)
+		item := consumeUserItemDataPool.get()
+		defer consumeUserItemDataPool.put(item)
 		if err = selectDatabase(userID).Get(item, query, v.ID, userID); err != nil {
 			if err == sql.ErrNoRows {
 				return errorResponse(c, http.StatusNotFound, err)
@@ -1776,7 +1794,8 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	}
 
 	// get response data
-	resultCard := new(UserCard)
+	resultCard := userCardPool.get()
+	defer userCardPool.put(resultCard)
 	query = "SELECT * FROM user_cards WHERE id=?"
 	if err = tx.Get(resultCard, query, card.ID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1784,10 +1803,10 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 		}
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-	resultItems, _f0 := userItemsArrPool.get()
-	defer _f0()
+	resultItems := userItemsArrPool.get()
+	defer userItemsArrPool.put(resultItems)
 	for _, v := range items {
-		resultItems = append(resultItems, &UserItem{
+		*resultItems = append(*resultItems, &UserItem{
 			ID:        v.ID,
 			UserID:    v.UserID,
 			ItemID:    v.ItemID,
@@ -1804,7 +1823,7 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	}
 
 	return successResponse(c, &AddExpToCardResponse{
-		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, []*UserCard{resultCard}, nil, resultItems, nil, nil),
+		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, []*UserCard{resultCard}, nil, *resultItems, nil, nil),
 	})
 }
 
@@ -1864,7 +1883,8 @@ func (h *Handler) updateDeck(c *fiber.Ctx) error {
 	}
 
 	// read body
-	req := new(UpdateDeckRequest)
+	req := updateDeckRequestPool.get()
+	defer updateDeckRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1891,12 +1911,12 @@ func (h *Handler) updateDeck(c *fiber.Ctx) error {
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
-	cards, _f0 := userCardArrPool.get()
-	defer _f0()
-	if err = selectDatabase(userID).Select(&cards, query, params...); err != nil {
+	cards := userCardArrPool.get()
+	defer userCardArrPool.put(cards)
+	if err = selectDatabase(userID).Select(cards, query, params...); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-	if len(cards) != DeckCardNumber {
+	if len(*cards) != DeckCardNumber {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid card ids"))
 	}
 
@@ -1959,7 +1979,8 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 	}
 
 	// parse body
-	req := new(RewardRequest)
+	req := rewardRequestPool.get()
+	defer rewardRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1977,7 +1998,8 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 	}
 
 	// 最後に取得した報酬時刻取得
-	user := new(User)
+	user := userPool.get()
+	defer userPool.put(user)
 	query := "SELECT * FROM users WHERE id=?"
 	if err = selectDatabase(userID).Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1987,7 +2009,8 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 	}
 
 	// 使っているデッキの取得
-	deck := new(UserDeck)
+	deck := userDeckPool.get()
+	defer userDeckPool.put(deck)
 	query = "SELECT * FROM user_decks WHERE user_id=? AND deleted_at IS NULL"
 	if err = selectDatabase(userID).Get(deck, query, userID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1996,19 +2019,19 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	cards, _f0 := userCardArrPool.get()
-	defer _f0()
+	cards := userCardArrPool.get()
+	defer userCardArrPool.put(cards)
 	query = "SELECT * FROM user_cards WHERE id IN (?, ?, ?)"
-	if err = selectDatabase(userID).Select(&cards, query, deck.CardID1, deck.CardID2, deck.CardID3); err != nil {
+	if err = selectDatabase(userID).Select(cards, query, deck.CardID1, deck.CardID2, deck.CardID3); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-	if len(cards) != 3 {
+	if len(*cards) != 3 {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid cards length"))
 	}
 
 	// 経過時間*生産性のcoin (1椅子 = 1coin)
 	pastTime := requestAt - user.LastGetRewardAt
-	getCoin := int(pastTime) * (cards[0].AmountPerSec + cards[1].AmountPerSec + cards[2].AmountPerSec)
+	getCoin := int(pastTime) * ((*cards)[0].AmountPerSec + (*cards)[1].AmountPerSec + (*cards)[2].AmountPerSec)
 
 	// 報酬の保存(ゲームない通貨を保存)(users)
 	user.IsuCoin += int64(getCoin)
@@ -2046,7 +2069,8 @@ func (h *Handler) home(c *fiber.Ctx) error {
 	}
 
 	// 装備情報
-	deck := new(UserDeck)
+	deck := userDeckPool.get()
+	defer userDeckPool.put(deck)
 	query := "SELECT * FROM user_decks WHERE user_id=? AND deleted_at IS NULL"
 	if err = selectDatabase(userID).Get(deck, query, userID); err != nil {
 		if err != sql.ErrNoRows {
@@ -2056,25 +2080,26 @@ func (h *Handler) home(c *fiber.Ctx) error {
 	}
 
 	// 生産性
-	cards, _f0 := userCardArrPool.get()
-	defer _f0()
+	cards := userCardArrPool.get()
+	defer userCardArrPool.put(cards)
 	if deck != nil {
 		cardIds := []int64{deck.CardID1, deck.CardID2, deck.CardID3}
 		query, params, err := sqlx.In("SELECT * FROM user_cards WHERE id IN (?)", cardIds)
 		if err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-		if err = selectDatabase(userID).Select(&cards, query, params...); err != nil {
+		if err = selectDatabase(userID).Select(cards, query, params...); err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
 	}
 	totalAmountPerSec := 0
-	for _, v := range cards {
+	for _, v := range *cards {
 		totalAmountPerSec += v.AmountPerSec
 	}
 
 	// 経過時間
-	user := new(User)
+	user := userPool.get()
+	defer userPool.put(user)
 	query = "SELECT * FROM users WHERE id=?"
 	if err = selectDatabase(userID).Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
@@ -2111,7 +2136,7 @@ func (h *Handler) health(c *fiber.Ctx) error {
 
 // errorResponse returns error.
 func errorResponse(c *fiber.Ctx, statusCode int, err error) error {
-	//log.Printf("status=%d, err=%+v", statusCode, errors.WithStack(err))
+	// log.Printf("status=%d, err=%+v", statusCode, errors.WithStack(err))
 
 	return c.Status(statusCode).JSON(struct {
 		StatusCode int    `json:"status_code"`
