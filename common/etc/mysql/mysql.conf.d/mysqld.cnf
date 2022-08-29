@@ -79,22 +79,22 @@ max_binlog_size   = 100M
 # binlog_ignore_db	= include_database_name
 
 max_connections=1000  # <- connection の limit を更新
-innodb_buffer_pool_size = 3GB # ディスクイメージをメモリ上にバッファさせる値をきめる設定値(メモリの75%くらい)
+innodb_buffer_pool_size = 4GB # ディスクイメージをメモリ上にバッファさせる値をきめる設定値(メモリの75%くらい)
 innodb_flush_log_at_trx_commit = 0 # 1に設定するとトランザクション単位でログを出力するが 2 を指定すると1秒間に1回ログを吐く。0だとログも1秒に1回。
 innodb_flush_method = O_DIRECT # データファイル、ログファイルの読み書き方式を指定する(実験する価値はある)
 
 innodb_file_per_table=ON # InnoDBのデータ領域をテーブルごとに変える
 
 # innoDBの更新ログを保持するメモリ
-innodb_log_buffer_size = 128MB
+innodb_log_buffer_size = 256MB
 
 # InnoDBの更新ログを記録するディスク上のファイルサイズ(innodb_buffer_pool_sizeの4分の1程度)
-innodb_log_file_size=512MB
+innodb_log_file_size=1GB
 
 # ORDER BYやGROUP BYのときに使われるメモリ上の領域
-innodb_sort_buffer_size = 64MB
-read_rnd_buffer_size = 16MB #
-key_buffer_size = 512MB # これも可能なら大きくした方が良い
+innodb_sort_buffer_size = 128MB
+read_rnd_buffer_size = 64MB #
+key_buffer_size = 1GB # これも可能なら大きくした方が良い
 
 disable-log-bin
 innodb_doublewrite = 0
