@@ -73,9 +73,10 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		//Prefork:     true,
-		JSONEncoder: json.Marshal,
-		JSONDecoder: json.Unmarshal,
-		Concurrency: 1000000,
+		JSONEncoder:  json.Marshal,
+		JSONDecoder:  json.Unmarshal,
+		Concurrency:  1000000,
+		ErrorHandler: nil,
 	})
 
 	//app.Hooks().OnFork(func(i int) error {
@@ -2110,7 +2111,7 @@ func (h *Handler) health(c *fiber.Ctx) error {
 
 // errorResponse returns error.
 func errorResponse(c *fiber.Ctx, statusCode int, err error) error {
-	log.Printf("status=%d, err=%+v", statusCode, errors.WithStack(err))
+	//log.Printf("status=%d, err=%+v", statusCode, errors.WithStack(err))
 
 	return c.Status(statusCode).JSON(struct {
 		StatusCode int    `json:"status_code"`
