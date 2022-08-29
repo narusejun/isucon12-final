@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -16,10 +18,10 @@ import (
 
 	"github.com/bwmarrin/snowflake"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 	"github.com/mono0x/prand"
 	cmap "github.com/orcaman/concurrent-map/v2"
 	"github.com/pkg/errors"
@@ -65,15 +67,28 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 	time.Local = time.FixedZone("Local", 9*60*60)
 
-	e := echo.New()
-	e.HideBanner = true
-	e.JSONSerializer = &JsonSerializer{}
-	// e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{http.MethodGet, http.MethodPost},
-		AllowHeaders: []string{"Content-Type", "x-master-version", "x-session"},
+	//runtime.GOMAXPROCS(1)
+
+	app := fiber.New(fiber.Config{
+		//Prefork:     true,
+		JSONEncoder: json.Marshal,
+		JSONDecoder: json.Unmarshal,
+		Concurrency: 1000000,
+	})
+
+	//app.Hooks().OnFork(func(i int) error {
+	//	err := exec.Command("/usr/bin/taskset", "-cp", "1", strconv.Itoa(i)).Run()
+	//	if err != nil {
+	//		log.Printf("failed to taskset: %v", err)
+	//		return err
+	//	}
+	//
+	//	return nil
+	//})
+
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowHeaders: "Content-Type, x-master-version, x-session",
 	}))
 
 	// Snowflake
@@ -94,6 +109,42 @@ func main() {
 	// cache reset
 	resetCache()
 
+	h := &Handler{
+		snowflakeNode: snowflakeNode,
+	}
+
+	// utility
+	app.Post("/initialize", initialize)
+	app.Post("/initializeOne", initializeOne)
+	app.Get("/health", h.health)
+
+	// feature
+	app.Post("/user", h.apiMiddleware, h.createUser)
+	app.Post("/login", h.apiMiddleware, h.login)
+
+	app.Get("/user/:userID/gacha/index", h.apiMiddleware, h.checkSessionMiddleware, h.listGacha)
+	app.Post("/user/:userID/gacha/draw/:gachaID/:n", h.apiMiddleware, h.checkSessionMiddleware, h.drawGacha)
+	app.Get("/user/:userID/present/index/:n", h.apiMiddleware, h.checkSessionMiddleware, h.listPresent)
+	app.Post("/user/:userID/present/receive", h.apiMiddleware, h.checkSessionMiddleware, h.receivePresent)
+	app.Get("/user/:userID/item", h.apiMiddleware, h.checkSessionMiddleware, h.listItem)
+	app.Post("/user/:userID/card/addexp/:cardID", h.apiMiddleware, h.checkSessionMiddleware, h.addExpToCard)
+	app.Post("/user/:userID/card", h.apiMiddleware, h.checkSessionMiddleware, h.updateDeck)
+	app.Post("/user/:userID/reward", h.apiMiddleware, h.checkSessionMiddleware, h.reward)
+	app.Get("/user/:userID/home", h.apiMiddleware, h.checkSessionMiddleware, h.home)
+
+	// admin
+	app.Post("/admin/login", h.adminMiddleware, h.adminLogin)
+
+	app.Delete("/admin/logout", h.adminMiddleware, h.adminSessionCheckMiddleware, h.adminLogout)
+	app.Get("/admin/master", h.adminMiddleware, h.adminSessionCheckMiddleware, h.adminListMaster)
+	app.Put("/admin/master", h.adminMiddleware, h.adminSessionCheckMiddleware, h.adminUpdateMaster)
+	app.Get("/admin/user/:userID", h.adminMiddleware, h.adminSessionCheckMiddleware, h.adminUser)
+	app.Post("/admin/user/:userID/ban", h.adminMiddleware, h.adminSessionCheckMiddleware, h.adminBanUser)
+
+	if _, err := forceRecache(adminDatabase()); err != nil {
+		log.Fatal(err)
+	}
+
 	// setting server
 	if getEnv("UNIX_DOMAIN_SOCKET", "") != "" {
 		os.MkdirAll("/var/run", 0777)
@@ -103,179 +154,120 @@ func main() {
 
 		l, err := net.Listen("unix", socket_file)
 		if err != nil {
-			e.Logger.Fatal(err)
+			log.Fatal(err)
 		}
 
 		// go runユーザとnginxのユーザ（グループ）を同じにすれば777じゃなくてok
 		err = os.Chmod(socket_file, 0777)
 		if err != nil {
-			e.Logger.Fatal(err)
+			log.Fatal(err)
 		}
-
-		e.Listener = l
+		app.Listener(l)
 	} else {
-		e.Server.Addr = fmt.Sprintf(":%v", "8080")
+		app.Listen("0.0.0.0:8080")
 	}
-	h := &Handler{
-		snowflakeNode: snowflakeNode,
-	}
-
-	// e.Use(middleware.CORS())
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{}))
-
-	// utility
-	e.POST("/initialize", initialize)
-	e.POST("/initializeOne", initializeOne)
-	e.GET("/health", h.health)
-
-	// feature
-	API := e.Group("", h.apiMiddleware)
-	API.POST("/user", h.createUser)
-	API.POST("/login", h.login)
-	sessCheckAPI := API.Group("", h.checkSessionMiddleware)
-	sessCheckAPI.GET("/user/:userID/gacha/index", h.listGacha)
-	sessCheckAPI.POST("/user/:userID/gacha/draw/:gachaID/:n", h.drawGacha)
-	sessCheckAPI.GET("/user/:userID/present/index/:n", h.listPresent)
-	sessCheckAPI.POST("/user/:userID/present/receive", h.receivePresent)
-	sessCheckAPI.GET("/user/:userID/item", h.listItem)
-	sessCheckAPI.POST("/user/:userID/card/addexp/:cardID", h.addExpToCard)
-	sessCheckAPI.POST("/user/:userID/card", h.updateDeck)
-	sessCheckAPI.POST("/user/:userID/reward", h.reward)
-	sessCheckAPI.GET("/user/:userID/home", h.home)
-
-	// admin
-	adminAPI := e.Group("", h.adminMiddleware)
-	adminAPI.POST("/admin/login", h.adminLogin)
-	adminAuthAPI := adminAPI.Group("", h.adminSessionCheckMiddleware)
-	adminAuthAPI.DELETE("/admin/logout", h.adminLogout)
-	adminAuthAPI.GET("/admin/master", h.adminListMaster)
-	adminAuthAPI.PUT("/admin/master", h.adminUpdateMaster)
-	adminAuthAPI.GET("/admin/user/:userID", h.adminUser)
-	adminAuthAPI.POST("/admin/user/:userID/ban", h.adminBanUser)
-
-	if _, err := forceRecache(adminDatabase()); err != nil {
-		e.Logger.Fatal(err)
-	}
-
-	e.Logger.Infof("Start server: address=%s", e.Server.Addr)
-	e.Logger.Error(e.StartServer(e.Server))
 }
 
 // adminMiddleware
-func (h *Handler) adminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		requestAt := time.Now()
-		c.Set("requestTime", requestAt.Unix())
+func (h *Handler) adminMiddleware(c *fiber.Ctx) error {
+	requestAt := time.Now()
+	c.Context().SetUserValue("requestTime", requestAt.Unix())
 
-		// next
-		if err := next(c); err != nil {
-			c.Error(err)
-		}
-		return nil
-	}
+	// next
+	return c.Next()
 }
 
 // apiMiddleware
-func (h *Handler) apiMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		requestAt, err := time.Parse(time.RFC1123, c.Request().Header.Get("x-isu-date"))
-		if err != nil {
-			requestAt = time.Now()
-		}
-		c.Set("requestTime", requestAt.Unix())
+func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
+	requestAt, err := time.Parse(time.RFC1123, c.Get("x-isu-date"))
+	if err != nil {
+		requestAt = time.Now()
+	}
+	c.Context().SetUserValue("requestTime", requestAt.Unix())
 
-		userID, err := getUserID(c)
-		if err != nil {
-			userID = 0
-		}
+	userID, err := getUserID(c)
+	if err != nil {
+		userID = 0
+	}
 
-		// マスタ確認
-		masterVersion, err := shouldRecache(selectDatabase(userID))
+	// マスタ確認
+	masterVersion, err := shouldRecache(selectDatabase(userID))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return errorResponse(c, http.StatusNotFound, fmt.Errorf("active master version is not found"))
+		}
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+
+	if masterVersion != c.Get("x-master-version") {
+		return errorResponse(c, http.StatusUnprocessableEntity, ErrInvalidMasterVersion)
+	}
+
+	// check ban
+	userID, err = getUserID(c)
+	if err == nil && userID != 0 {
+		isBan, err := h.checkBan(userID)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return errorResponse(c, http.StatusNotFound, fmt.Errorf("active master version is not found"))
-			}
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-
-		if masterVersion != c.Request().Header.Get("x-master-version") {
-			return errorResponse(c, http.StatusUnprocessableEntity, ErrInvalidMasterVersion)
+		if isBan {
+			return errorResponse(c, http.StatusForbidden, ErrForbidden)
 		}
-
-		// check ban
-		userID, err = getUserID(c)
-		if err == nil && userID != 0 {
-			isBan, err := h.checkBan(userID)
-			if err != nil {
-				return errorResponse(c, http.StatusInternalServerError, err)
-			}
-			if isBan {
-				return errorResponse(c, http.StatusForbidden, ErrForbidden)
-			}
-		}
-
-		// next
-		if err := next(c); err != nil {
-			c.Error(err)
-		}
-		return nil
 	}
+
+	// next
+	return c.Next()
 }
 
 // checkSessionMiddleware
-func (h *Handler) checkSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		sessID := c.Request().Header.Get("x-session")
-		if sessID == "" {
+func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
+	sessID := c.Get("x-session")
+	if sessID == "" {
+		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+	}
+
+	sesssionUserIDStrs := strings.Split(sessID, "::")
+	if len(sesssionUserIDStrs) != 2 {
+		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+	}
+	sesssionUserID, err := strconv.ParseInt(sesssionUserIDStrs[1], 10, 64)
+	if err != nil {
+		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+	}
+
+	userID, err := getUserID(c)
+	if err != nil {
+		return errorResponse(c, http.StatusBadRequest, err)
+	}
+
+	requestAt, err := getRequestTime(c)
+	if err != nil {
+		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
+	}
+
+	userSession := new(Session)
+	query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
+	if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
+		if err == sql.ErrNoRows {
 			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 		}
+		return errorResponse(c, http.StatusInternalServerError, err)
+	}
 
-		sesssionUserIDStrs := strings.Split(sessID, "::")
-		if len(sesssionUserIDStrs) != 2 {
-			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
-		}
-		sesssionUserID, err := strconv.ParseInt(sesssionUserIDStrs[1], 10, 64)
-		if err != nil {
-			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
-		}
+	if userSession.UserID != userID {
+		return errorResponse(c, http.StatusForbidden, ErrForbidden)
+	}
 
-		userID, err := getUserID(c)
-		if err != nil {
-			return errorResponse(c, http.StatusBadRequest, err)
-		}
-
-		requestAt, err := getRequestTime(c)
-		if err != nil {
-			return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
-		}
-
-		userSession := new(Session)
-		query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
-		if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
-			if err == sql.ErrNoRows {
-				return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
-			}
+	if userSession.ExpiredAt < requestAt {
+		query = "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
+		if _, err = selectDatabase(userID).Exec(query, requestAt, sessID); err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-
-		if userSession.UserID != userID {
-			return errorResponse(c, http.StatusForbidden, ErrForbidden)
-		}
-
-		if userSession.ExpiredAt < requestAt {
-			query = "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
-			if _, err = selectDatabase(userID).Exec(query, requestAt, sessID); err != nil {
-				return errorResponse(c, http.StatusInternalServerError, err)
-			}
-			return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
-		}
-
-		// next
-		if err := next(c); err != nil {
-			c.Error(err)
-		}
-		return nil
+		return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
 	}
+
+	// next
+	return c.Next()
 }
 
 // checkOneTimeToken
@@ -342,8 +334,8 @@ func (h *Handler) checkBan(userID int64) (bool, error) {
 }
 
 // getRequestTime リクエストを受けた時間をコンテキストからunixtimeで取得する
-func getRequestTime(c echo.Context) (int64, error) {
-	v := c.Get("requestTime")
+func getRequestTime(c *fiber.Ctx) (int64, error) {
+	v := c.Context().UserValue("requestTime")
 	if requestTime, ok := v.(int64); ok {
 		return requestTime, nil
 	}
@@ -748,7 +740,7 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 
 // initialize 初期化処理
 // POST /initialize
-func initialize(c echo.Context) error {
+func initialize(c *fiber.Ctx) error {
 	errCh := make(chan error, len(dbHosts))
 	wg := sync.WaitGroup{}
 
@@ -779,7 +771,7 @@ func initialize(c echo.Context) error {
 
 	_, err := forceRecache(adminDatabase())
 	if err != nil {
-		c.Logger().Errorf("Failed to recache masters : %v", err)
+		log.Printf("Failed to recache masters : %v", err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -789,10 +781,10 @@ func initialize(c echo.Context) error {
 		Language: "go",
 	})
 }
-func initializeOne(c echo.Context) error {
+func initializeOne(c *fiber.Ctx) error {
 	out, err := exec.Command("/bin/sh", "-c", SQLDirectory+"init.sh").CombinedOutput()
 	if err != nil {
-		c.Logger().Errorf("Failed to initialize %s: %v", string(out), err)
+		log.Printf("Failed to initialize %s: %v", string(out), err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
@@ -809,7 +801,7 @@ type InitializeResponse struct {
 
 // createUser ユーザの作成
 // POST /user
-func (h *Handler) createUser(c echo.Context) error {
+func (h *Handler) createUser(c *fiber.Ctx) error {
 	// parse body
 	req := new(CreateUserRequest)
 	if err := parseRequestBody(c, req); err != nil {
@@ -979,7 +971,7 @@ type CreateUserResponse struct {
 
 // login ログイン
 // POST /login
-func (h *Handler) login(c echo.Context) error {
+func (h *Handler) login(c *fiber.Ctx) error {
 	req := new(LoginRequest)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1107,7 +1099,7 @@ type LoginResponse struct {
 
 // listGacha ガチャ一覧
 // GET /user/{userID}/gacha/index
-func (h *Handler) listGacha(c echo.Context) error {
+func (h *Handler) listGacha(c *fiber.Ctx) error {
 	userID, err := getUserID(c)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1186,18 +1178,18 @@ type GachaData struct {
 
 // drawGacha ガチャを引く
 // POST /user/{userID}/gacha/draw/{gachaID}/{n}
-func (h *Handler) drawGacha(c echo.Context) error {
+func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	userID, err := getUserID(c)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
-	gachaID := c.Param("gachaID")
+	gachaID := c.Params("gachaID")
 	if gachaID == "" {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid gachaID"))
 	}
 
-	gachaCount, err := strconv.ParseInt(c.Param("n"), 10, 64)
+	gachaCount, err := strconv.ParseInt(c.Params("n"), 10, 64)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1345,8 +1337,8 @@ type DrawGachaResponse struct {
 
 // listPresent プレゼント一覧
 // GET /user/{userID}/present/index/{n}
-func (h *Handler) listPresent(c echo.Context) error {
-	n, err := strconv.Atoi(c.Param("n"))
+func (h *Handler) listPresent(c *fiber.Ctx) error {
+	n, err := strconv.Atoi(c.Params("n"))
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid index number (n) parameter"))
 	}
@@ -1388,7 +1380,7 @@ type ListPresentResponse struct {
 
 // receivePresent プレゼント受け取り
 // POST /user/{userID}/present/receive
-func (h *Handler) receivePresent(c echo.Context) error {
+func (h *Handler) receivePresent(c *fiber.Ctx) error {
 	// read body
 	req := new(ReceivePresentRequest)
 	if err := parseRequestBody(c, req); err != nil {
@@ -1524,7 +1516,7 @@ type ReceivePresentResponse struct {
 
 // listItem アイテムリスト
 // GET /user/{userID}/item
-func (h *Handler) listItem(c echo.Context) error {
+func (h *Handler) listItem(c *fiber.Ctx) error {
 	userID, err := getUserID(c)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1602,8 +1594,8 @@ type ListItemResponse struct {
 
 // addExpToCard 装備強化
 // POST /user/{userID}/card/addexp/{cardID}
-func (h *Handler) addExpToCard(c echo.Context) error {
-	cardID, err := strconv.ParseInt(c.Param("cardID"), 10, 64)
+func (h *Handler) addExpToCard(c *fiber.Ctx) error {
+	cardID, err := strconv.ParseInt(c.Params("cardID"), 10, 64)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1800,7 +1792,7 @@ type TargetUserCardData struct {
 
 // updateDeck 装備変更
 // POST /user/{userID}/card
-func (h *Handler) updateDeck(c echo.Context) error {
+func (h *Handler) updateDeck(c *fiber.Ctx) error {
 
 	userID, err := getUserID(c)
 	if err != nil {
@@ -1896,7 +1888,7 @@ type UpdateDeckResponse struct {
 
 // reward ゲーム報酬受取
 // POST /user/{userID}/reward
-func (h *Handler) reward(c echo.Context) error {
+func (h *Handler) reward(c *fiber.Ctx) error {
 	userID, err := getUserID(c)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -1978,7 +1970,7 @@ type RewardResponse struct {
 
 // home ホーム取得
 // GET /user/{userID}/home
-func (h *Handler) home(c echo.Context) error {
+func (h *Handler) home(c *fiber.Ctx) error {
 	userID, err := getUserID(c)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
@@ -2049,15 +2041,15 @@ type HomeResponse struct {
 // util
 
 // health ヘルスチェック
-func (h *Handler) health(c echo.Context) error {
-	return c.String(http.StatusOK, "OK")
+func (h *Handler) health(c *fiber.Ctx) error {
+	return c.Status(http.StatusOK).SendString("OK")
 }
 
 // errorResponse returns error.
-func errorResponse(c echo.Context, statusCode int, err error) error {
-	c.Logger().Errorf("status=%d, err=%+v", statusCode, errors.WithStack(err))
+func errorResponse(c *fiber.Ctx, statusCode int, err error) error {
+	log.Printf("status=%d, err=%+v", statusCode, errors.WithStack(err))
 
-	return c.JSON(statusCode, struct {
+	return c.Status(statusCode).JSON(struct {
 		StatusCode int    `json:"status_code"`
 		Message    string `json:"message"`
 	}{
@@ -2067,13 +2059,13 @@ func errorResponse(c echo.Context, statusCode int, err error) error {
 }
 
 // successResponse responds success.
-func successResponse(c echo.Context, v interface{}) error {
-	return c.JSON(http.StatusOK, v)
+func successResponse(c *fiber.Ctx, v interface{}) error {
+	return c.Status(http.StatusOK).JSON(v)
 }
 
 // noContentResponse
-func noContentResponse(c echo.Context, status int) error {
-	return c.NoContent(status)
+func noContentResponse(c *fiber.Ctx, status int) error {
+	return c.SendStatus(status)
 }
 
 // generateID uniqueなIDを生成する
@@ -2092,8 +2084,8 @@ func generateUUID() (string, error) {
 }
 
 // getUserID gets userID by path param.
-func getUserID(c echo.Context) (int64, error) {
-	return strconv.ParseInt(c.Param("userID"), 10, 64)
+func getUserID(c *fiber.Ctx) (int64, error) {
+	return strconv.ParseInt(c.Params("userID"), 10, 64)
 }
 
 // getEnv gets environment variable.
@@ -2106,8 +2098,8 @@ func getEnv(key, defaultVal string) string {
 }
 
 // parseRequestBody parses request body.
-func parseRequestBody(c echo.Context, dist interface{}) error {
-	err := c.Bind(dist)
+func parseRequestBody(c *fiber.Ctx, dist interface{}) error {
+	err := c.BodyParser(dist)
 	if err != nil {
 		return ErrInvalidRequestBody
 	}
