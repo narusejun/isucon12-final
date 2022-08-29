@@ -12,6 +12,6 @@ sudo cp -f env.sh /home/isucon/env
 #make
 
 # ミドルウェア・Appの再起動
-sudo systemctl restart nginx
+sudo systemctl stop nginx
 sudo systemctl disable mysql --now
 sudo systemctl restart isuconquest.go

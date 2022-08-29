@@ -72,19 +72,19 @@ func main() {
 	//runtime.GOMAXPROCS(1)
 
 	app := fiber.New(fiber.Config{
-		//Prefork:     true,
-		JSONEncoder:  json.Marshal,
-		JSONDecoder:  json.Unmarshal,
-		Concurrency:  1000000,
-		ErrorHandler: nil,
+		// Prefork:      true,
+		JSONEncoder: json.Marshal,
+		JSONDecoder: json.Unmarshal,
 	})
 
+	//idx := 0
 	//app.Hooks().OnFork(func(i int) error {
-	//	err := exec.Command("/usr/bin/taskset", "-cp", "1", strconv.Itoa(i)).Run()
+	//	err := exec.Command("/usr/bin/taskset", "-cp", strconv.Itoa(idx), strconv.Itoa(i)).Run()
 	//	if err != nil {
 	//		log.Printf("failed to taskset: %v", err)
 	//		return err
 	//	}
+	//	idx++
 	//
 	//	return nil
 	//})
@@ -167,7 +167,7 @@ func main() {
 		}
 		app.Listener(l)
 	} else {
-		app.Listen("0.0.0.0:8080")
+		app.Listen("0.0.0.0:" + getEnv("ISUCON_LISTEN_PORT", "8080"))
 	}
 }
 
