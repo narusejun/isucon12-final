@@ -2,6 +2,7 @@
 
 # 各種設定ファイルのコピー
 sudo cp -f etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/mysql.conf.d/mysqld.cnf
+sudo cp -f etc/mysql/mariadb.conf.d/mariadbd.cnf /etc/mysql/mariadb.conf.d/mariadbd.cnf
 sudo cp -f etc/nginx/nginx.conf /etc/nginx/nginx.conf
 sudo cp -f etc/nginx/sites-available/isuconquest.conf /etc/nginx/sites-available/isuconquest.conf
 sudo nginx -t
