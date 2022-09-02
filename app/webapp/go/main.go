@@ -72,7 +72,7 @@ func main() {
 	//runtime.GOMAXPROCS(1)
 
 	app := fiber.New(fiber.Config{
-		// Prefork:      true,
+		//Prefork:     true,
 		JSONEncoder: json.Marshal,
 		JSONDecoder: json.Unmarshal,
 		Concurrency: 1000000,
