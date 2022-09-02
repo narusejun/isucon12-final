@@ -79,6 +79,53 @@ func main() {
 	//	return nil
 	//})
 
+	app.Hooks().OnShutdown(func() error {
+		buf, err := json.Marshal(oneTimeTokenType1)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile("user_one_time_tokens_type1.json", buf, 0777); err != nil {
+			return err
+		}
+		buf, err = json.Marshal(oneTimeTokenType2)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile("user_one_time_tokens_type2.json", buf, 0777); err != nil {
+			return err
+		}
+		buf, err = json.Marshal(userSession)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile("user_session.json", buf, 0777); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if buf, err := os.ReadFile("user_one_time_tokens_type1.json"); err != nil {
+		log.Printf("failed to read file: %v", err)
+	} else {
+		if err := json.Unmarshal(buf, &oneTimeTokenType1); err != nil {
+			log.Printf("failed to unmarshal: %v", err)
+		}
+	}
+	if buf, err := os.ReadFile("user_one_time_tokens_type2.json"); err != nil {
+		log.Printf("failed to read file: %v", err)
+	} else {
+		if err := json.Unmarshal(buf, &oneTimeTokenType2); err != nil {
+			log.Printf("failed to unmarshal: %v", err)
+		}
+	}
+	if buf, err := os.ReadFile("user_session.json"); err != nil {
+		log.Printf("failed to read file: %v", err)
+	} else {
+		if err := json.Unmarshal(buf, &userSession); err != nil {
+			log.Printf("failed to unmarshal: %v", err)
+		}
+	}
+
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Content-Type, x-master-version, x-session",
@@ -260,49 +307,6 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 	}
 
-	//userSession, ok = sessionCache.Get(sessID)
-	//if !ok {
-	//	query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
-	//	if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
-	//		if err == sql.ErrNoRows {
-	//			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
-	//		}
-	//		return errorResponse(c, http.StatusInternalServerError, err)
-	//	}
-	//	sessionCache.Set(sessID, userSession)
-	//	sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
-	//	if !ok {
-	//		sessIDs = stringArrPool.get()
-	//	}
-	//	*sessIDs = append(*sessIDs, sessID)
-	//	sessionIDsCache.Set(sesssionUserIDStrs[1], sessIDs)
-	//}
-	//
-	//if userSession.UserID != userID {
-	//	return errorResponse(c, http.StatusForbidden, ErrForbidden)
-	//}
-	//
-	//if userSession.ExpiredAt < requestAt {
-	//	sessionCache.Remove(sessID)
-	//	sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
-	//	if ok {
-	//		newSessIDs := stringArrPool.get()
-	//		for i := 0; i < len(*sessIDs); i++ {
-	//			if sessID != (*sessIDs)[i] {
-	//				*newSessIDs = append(*newSessIDs, (*sessIDs)[i])
-	//			}
-	//		}
-	//		sessionIDsCache.Set(sesssionUserIDStrs[1], newSessIDs)
-	//		stringArrPool.put(sessIDs)
-	//	}
-	//
-	//	query := "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
-	//	if _, err = selectDatabase(userID).Exec(query, requestAt, sessID); err != nil {
-	//		return errorResponse(c, http.StatusInternalServerError, err)
-	//	}
-	//	return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
-	//}
-
 	// next
 	return c.Next()
 }
@@ -326,11 +330,6 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 				}
 			}
 			if valid {
-				// 使ったトークンを失効する
-				//go func() {
-				//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
-				//	selectDatabase(userID).Exec(query, requestAt, token)
-				//}()
 				return nil
 			}
 		}
@@ -348,10 +347,6 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 			}
 			if valid {
 				// 使ったトークンを失効する
-				//go func() {
-				//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
-				//	selectDatabase(userID).Exec(query, requestAt, token)
-				//}()
 				return nil
 			}
 		}
