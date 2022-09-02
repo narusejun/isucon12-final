@@ -1,8 +1,6 @@
 package main
 
 import (
-	"sync"
-
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/sync/singleflight"
 )
@@ -11,18 +9,12 @@ var (
 	masterVersion = "nothing"
 	sf            = &singleflight.Group{}
 
-	itemMasterMux             = &sync.RWMutex{}
-	itemMaster                = make([]*ItemMaster, 0)
-	gachaMasterMux            = &sync.RWMutex{}
-	gachaMaster               = make([]*GachaMaster, 0)
-	gachaItemMasterMux        = &sync.RWMutex{}
-	gachaItemMaster           = make([]*GachaItemMaster, 0)
-	presentAllMasterMux       = &sync.RWMutex{}
-	presentAllMaster          = make([]*PresentAllMaster, 0)
-	loginBonusMasterMux       = &sync.RWMutex{}
-	loginBonusMaster          = make([]*LoginBonusMaster, 0)
-	loginBonusRewardMasterMux = &sync.RWMutex{}
-	loginBonusRewardMaster    = make([]*LoginBonusRewardMaster, 0)
+	itemMaster             = make([]*ItemMaster, 0)
+	gachaMaster            = make([]*GachaMaster, 0)
+	gachaItemMaster        = make([]*GachaItemMaster, 0)
+	presentAllMaster       = make([]*PresentAllMaster, 0)
+	loginBonusMaster       = make([]*LoginBonusMaster, 0)
+	loginBonusRewardMaster = make([]*LoginBonusRewardMaster, 0)
 )
 var (
 	isIchidai bool
@@ -70,19 +62,6 @@ func forceRecache(db *sqlx.DB) (string, error) {
 }
 
 func recache(db *sqlx.DB) error {
-	itemMasterMux.Lock()
-	defer itemMasterMux.Unlock()
-	gachaMasterMux.Lock()
-	defer gachaMasterMux.Unlock()
-	gachaItemMasterMux.Lock()
-	defer gachaItemMasterMux.Unlock()
-	presentAllMasterMux.Lock()
-	defer presentAllMasterMux.Unlock()
-	loginBonusMasterMux.Lock()
-	defer loginBonusMasterMux.Unlock()
-	loginBonusRewardMasterMux.Lock()
-	defer loginBonusRewardMasterMux.Unlock()
-
 	var query string
 	query = "SELECT * FROM item_masters"
 	if err := db.Select(&itemMaster, query); err != nil {
@@ -118,8 +97,6 @@ func recache(db *sqlx.DB) error {
 }
 
 func getItemMasterByID(id int64) (bool, ItemMaster) {
-	itemMasterMux.RLock()
-	defer itemMasterMux.RUnlock()
 	for _, v := range itemMaster {
 		if v.ID == id {
 			return true, *v
@@ -130,8 +107,6 @@ func getItemMasterByID(id int64) (bool, ItemMaster) {
 }
 
 func getGachaMaster(requestAt int64) []*GachaMaster {
-	gachaMasterMux.RLock()
-	defer gachaMasterMux.RUnlock()
 	masters := make([]*GachaMaster, 0)
 	for _, v := range gachaMaster {
 		if v.StartAt <= requestAt && requestAt <= v.EndAt {
@@ -143,8 +118,6 @@ func getGachaMaster(requestAt int64) []*GachaMaster {
 }
 
 func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
-	gachaMasterMux.RLock()
-	defer gachaMasterMux.RUnlock()
 	for _, v := range gachaMaster {
 		if inChecking {
 			if v.ID == id && v.StartAt <= requestAt && requestAt <= v.EndAt {
@@ -161,8 +134,6 @@ func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
 }
 
 func getGachaItemMasterByID(id int64) (bool, []*GachaItemMaster) {
-	gachaItemMasterMux.RLock()
-	defer gachaItemMasterMux.RUnlock()
 	gachaItems := make([]*GachaItemMaster, 0)
 	for _, v := range gachaItemMaster {
 		if v.GachaID == id {
@@ -174,8 +145,6 @@ func getGachaItemMasterByID(id int64) (bool, []*GachaItemMaster) {
 }
 
 func getPresentAllMaster(requestAt int64) []*PresentAllMaster {
-	presentAllMasterMux.RLock()
-	defer presentAllMasterMux.RUnlock()
 	masters := make([]*PresentAllMaster, 0)
 	for _, v := range presentAllMaster {
 		if v.RegisteredStartAt <= requestAt && requestAt <= v.RegisteredEndAt {
@@ -187,8 +156,6 @@ func getPresentAllMaster(requestAt int64) []*PresentAllMaster {
 }
 
 func getLoginBonusMaster(requestAt int64) []*LoginBonusMaster {
-	loginBonusMasterMux.RLock()
-	defer loginBonusMasterMux.RUnlock()
 	masters := make([]*LoginBonusMaster, 0)
 	for _, v := range loginBonusMaster {
 		if v.StartAt <= requestAt && v.ID != 3 {
@@ -200,8 +167,6 @@ func getLoginBonusMaster(requestAt int64) []*LoginBonusMaster {
 }
 
 func getLoginBonusRewardMasterByIDAndSequence(loginBonusID int64, rewardSequence int) (bool, LoginBonusRewardMaster) {
-	loginBonusRewardMasterMux.RLock()
-	defer loginBonusRewardMasterMux.RUnlock()
 	for _, v := range loginBonusRewardMaster {
 		if v.LoginBonusID == loginBonusID && v.RewardSequence == rewardSequence {
 			return true, *v
