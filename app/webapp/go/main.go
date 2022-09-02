@@ -23,7 +23,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/mono0x/prand"
-	cmap "github.com/orcaman/concurrent-map/v2"
 	"github.com/pkg/errors"
 )
 
@@ -49,11 +48,6 @@ const (
 	PresentCountPerPage int = 100
 
 	SQLDirectory string = "../sql/"
-)
-
-var (
-	sessionCache    = cmap.New[*Session]()
-	sessionIDsCache = cmap.New[*[]string]()
 )
 
 type Handler struct {
@@ -215,6 +209,10 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 }
 
 // checkSessionMiddleware
+var (
+	userSession = make(map[int64][]*Session)
+)
+
 func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 	sessID := c.Get("x-session")
 	if sessID == "" {
@@ -240,61 +238,70 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	userSession := sessionPool.get()
-	defer sessionPool.put(userSession)
-	if isIchidai {
-		var ok bool
-		userSession, ok = sessionCache.Get(sessID)
-		if !ok {
-			query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
-			if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
-				if err == sql.ErrNoRows {
-					return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
-				}
-				return errorResponse(c, http.StatusInternalServerError, err)
-			}
-			sessionCache.Set(sessID, userSession)
-			sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
-			if !ok {
-				sessIDs = stringArrPool.get()
-			}
-			*sessIDs = append(*sessIDs, sessID)
-			sessionIDsCache.Set(sesssionUserIDStrs[1], sessIDs)
-		}
-	} else {
-		query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
-		if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
-			if err == sql.ErrNoRows {
-				return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
-			}
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
-	}
-
-	if userSession.UserID != userID {
+	if userID != sesssionUserID {
 		return errorResponse(c, http.StatusForbidden, ErrForbidden)
 	}
 
-	if userSession.ExpiredAt < requestAt {
-		sessionCache.Remove(sessID)
-		sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
-		if ok {
-			newSessIDs := stringArrPool.get()
-			for i := 0; i < len(*sessIDs); i++ {
-				if sessID != (*sessIDs)[i] {
-					*newSessIDs = append(*newSessIDs, (*sessIDs)[i])
+	if sessions, ok := userSession[sesssionUserID]; ok {
+		ok := false
+		userSession[sesssionUserID] = make([]*Session, 0)
+		for i := 0; i < len(sessions); i++ {
+			if sessions[i].ExpiredAt > requestAt {
+				if sessions[i].SessionID == sessID {
+					ok = true
 				}
+				userSession[sesssionUserID] = append(userSession[sesssionUserID], sessions[i])
 			}
-			sessionIDsCache.Set(sesssionUserIDStrs[1], newSessIDs)
-			stringArrPool.put(sessIDs)
 		}
-
-		query := "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
-		if _, err = selectDatabase(userID).Exec(query, requestAt, sessID); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+		if !ok {
+			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 		}
-		return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
+	} else {
+		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 	}
+
+	//userSession, ok = sessionCache.Get(sessID)
+	//if !ok {
+	//	query := "SELECT * FROM user_sessions WHERE session_id=? AND deleted_at IS NULL"
+	//	if err := selectDatabase(sesssionUserID).Get(userSession, query, sessID); err != nil {
+	//		if err == sql.ErrNoRows {
+	//			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
+	//		}
+	//		return errorResponse(c, http.StatusInternalServerError, err)
+	//	}
+	//	sessionCache.Set(sessID, userSession)
+	//	sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
+	//	if !ok {
+	//		sessIDs = stringArrPool.get()
+	//	}
+	//	*sessIDs = append(*sessIDs, sessID)
+	//	sessionIDsCache.Set(sesssionUserIDStrs[1], sessIDs)
+	//}
+	//
+	//if userSession.UserID != userID {
+	//	return errorResponse(c, http.StatusForbidden, ErrForbidden)
+	//}
+	//
+	//if userSession.ExpiredAt < requestAt {
+	//	sessionCache.Remove(sessID)
+	//	sessIDs, ok := sessionIDsCache.Get(sesssionUserIDStrs[1])
+	//	if ok {
+	//		newSessIDs := stringArrPool.get()
+	//		for i := 0; i < len(*sessIDs); i++ {
+	//			if sessID != (*sessIDs)[i] {
+	//				*newSessIDs = append(*newSessIDs, (*sessIDs)[i])
+	//			}
+	//		}
+	//		sessionIDsCache.Set(sesssionUserIDStrs[1], newSessIDs)
+	//		stringArrPool.put(sessIDs)
+	//	}
+	//
+	//	query := "UPDATE user_sessions SET deleted_at=? WHERE session_id=?"
+	//	if _, err = selectDatabase(userID).Exec(query, requestAt, sessID); err != nil {
+	//		return errorResponse(c, http.StatusInternalServerError, err)
+	//	}
+	//	return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
+	//}
 
 	// next
 	return c.Next()
@@ -320,13 +327,14 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 			}
 			if valid {
 				// 使ったトークンを失効する
-				go func() {
-					query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
-					selectDatabase(userID).Exec(query, requestAt, token)
-				}()
+				//go func() {
+				//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
+				//	selectDatabase(userID).Exec(query, requestAt, token)
+				//}()
 				return nil
 			}
 		}
+		return ErrInvalidToken
 	} else if tokenType == 2 {
 		if tokens, ok := oneTimeTokenType2[userID]; ok {
 			valid := false
@@ -340,13 +348,14 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 			}
 			if valid {
 				// 使ったトークンを失効する
-				go func() {
-					query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
-					selectDatabase(userID).Exec(query, requestAt, token)
-				}()
+				//go func() {
+				//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
+				//	selectDatabase(userID).Exec(query, requestAt, token)
+				//}()
 				return nil
 			}
 		}
+		return ErrInvalidToken
 	}
 
 	tk := userOneTimeTokenPool.get()
@@ -890,6 +899,8 @@ func initialize(c *fiber.Ctx) error {
 	oneTimeTokenType1 = make(map[int64][]*UserOneTimeToken)
 	oneTimeTokenType2 = make(map[int64][]*UserOneTimeToken)
 
+	userSession = make(map[int64][]*Session)
+
 	inChecking = true
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -1060,19 +1071,16 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 86400,
 	}
-	sessionCache.Set(sess.SessionID, sess)
 
-	userIDstr := strconv.Itoa(int(user.ID))
-	sessIDs, ok := sessionIDsCache.Get(userIDstr)
-	if !ok {
-		sessIDs = stringArrPool.get()
+	if _, ok := userSession[user.ID]; !ok {
+		userSession[user.ID] = make([]*Session, 0)
 	}
-	*sessIDs = append(*sessIDs, sess.SessionID)
-	sessionIDsCache.Set(userIDstr, sessIDs)
-	query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
-	if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	userSession[user.ID] = append(userSession[user.ID], sess)
+
+	//query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
+	//if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
+	//	return errorResponse(c, http.StatusInternalServerError, err)
+	//}
 
 	err = tx.Commit()
 	if err != nil {
@@ -1149,19 +1157,10 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	// sessionを更新
-	sessIDs, ok := sessionIDsCache.Get(strconv.Itoa(int(user.ID)))
-	if ok {
-		for i := 0; i < len(*sessIDs); i++ {
-			_, ok := sessionCache.Get((*sessIDs)[i])
-			if ok {
-				sessionCache.Remove((*sessIDs)[i])
-			}
-		}
-	}
-	query = "UPDATE user_sessions SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-	if _, err = tx.Exec(query, requestAt, req.UserID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	//query = "UPDATE user_sessions SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+	//if _, err = tx.Exec(query, requestAt, req.UserID); err != nil {
+	//	return errorResponse(c, http.StatusInternalServerError, err)
+	//}
 	sID, err := h.generateID()
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1178,19 +1177,12 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 86400,
 	}
-	sessionCache.Set(sess.SessionID, sess)
 
-	userIDstr := strconv.Itoa(int(user.ID))
-	sessIDs, ok = sessionIDsCache.Get(userIDstr)
-	if !ok {
-		sessIDs = stringArrPool.get()
-	}
-	*sessIDs = append(*sessIDs, sessID)
-	sessionIDsCache.Set(userIDstr, sessIDs)
-	query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
-	if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	//query = "INSERT INTO user_sessions(id, user_id, session_id, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?)"
+	//if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
+	//	return errorResponse(c, http.StatusInternalServerError, err)
+	//}
+	userSession[req.UserID] = []*Session{sess}
 
 	// すでにログインしているユーザはログイン処理をしない
 	if isCompleteTodayLogin(time.Unix(user.LastActivatedAt, 0), time.Unix(requestAt, 0)) {
@@ -1310,12 +1302,12 @@ func (h *Handler) listGacha(c *fiber.Ctx) error {
 	oneTimeTokenType1[userID] = []*UserOneTimeToken{token}
 	delete(oneTimeTokenType2, userID)
 
-	go func() {
-		query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-		selectDatabase(userID).Exec(query, requestAt, userID)
-		query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-		selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt)
-	}()
+	//go func() {
+	//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+	//	selectDatabase(userID).Exec(query, requestAt, userID)
+	//	query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+	//	selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt)
+	//}()
 
 	return successResponse(c, &ListGachaResponse{
 		OneTimeToken: token.Token,
@@ -1734,13 +1726,13 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 	}
 	delete(oneTimeTokenType1, userID)
 	oneTimeTokenType2[userID] = []*UserOneTimeToken{token}
-	go func() {
-		// genearte one time token
-		query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-		selectDatabase(userID).Exec(query, requestAt, userID)
-		query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-		selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt)
-	}()
+	//go func() {
+	//	// genearte one time token
+	//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+	//	selectDatabase(userID).Exec(query, requestAt, userID)
+	//	query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+	//	selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt)
+	//}()
 
 	return successResponse(c, &ListItemResponse{
 		OneTimeToken: token.Token,
