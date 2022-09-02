@@ -339,7 +339,18 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 }
 
 // checkViewerID
+var (
+	userDevices = make(map[int64]map[string]struct{})
+)
+
 func (h *Handler) checkViewerID(userID int64, viewerID string) error {
+	if devices, ok := userDevices[userID]; ok {
+		if _, ok := devices[viewerID]; ok {
+			return nil
+		}
+	} else {
+		userDevices[userID] = make(map[string]struct{})
+	}
 	query := "SELECT * FROM user_devices WHERE user_id=? AND platform_id=?"
 	device := userDevicePool.get()
 	defer userDevicePool.put(device)
@@ -349,6 +360,8 @@ func (h *Handler) checkViewerID(userID int64, viewerID string) error {
 		}
 		return err
 	}
+
+	userDevices[userID][viewerID] = struct{}{}
 
 	return nil
 }
@@ -829,6 +842,9 @@ func initialize(c *fiber.Ctx) error {
 	}
 
 	resetCache()
+
+	userDevices = make(map[int64]map[string]struct{})
+
 	inChecking = true
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -919,6 +935,11 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
+
+	if _, ok := userDevices[user.ID]; !ok {
+		userDevices[user.ID] = make(map[string]struct{})
+	}
+	userDevices[user.ID][req.ViewerID] = struct{}{}
 
 	// 初期デッキ付与
 	ok, initCard := getItemMasterByID(2)
