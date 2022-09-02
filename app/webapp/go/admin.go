@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -678,7 +677,7 @@ func (h *Handler) adminBanUser(c *fiber.Ctx) error {
 	if _, err = targetDb.Exec(query, banID, userID, requestAt, requestAt, requestAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-	userBanCache.Remove(strconv.Itoa(int(userID)))
+	delete(userBan, userID)
 
 	return successResponse(c, &AdminBanUserResponse{
 		User: user,

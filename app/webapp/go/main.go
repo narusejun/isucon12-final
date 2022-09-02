@@ -52,14 +52,9 @@ const (
 )
 
 var (
-	userBanCache    = cmap.New[struct{}]()
 	sessionCache    = cmap.New[*Session]()
 	sessionIDsCache = cmap.New[*[]string]()
 )
-
-func resetCache() {
-	userBanCache.Clear()
-}
 
 type Handler struct {
 	snowflakeNode *snowflake.Node
@@ -109,9 +104,6 @@ func main() {
 	if err := initDatabase(); err != nil {
 		panic(err)
 	}
-
-	// cache reset
-	resetCache()
 
 	h := &Handler{
 		snowflakeNode: snowflakeNode,
@@ -208,8 +200,7 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 	}
 
 	// check ban
-	userID, err = getUserID(c)
-	if err == nil && userID != 0 {
+	if userID != 0 {
 		isBan, err := h.checkBan(userID)
 		if err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)
@@ -310,10 +301,57 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 }
 
 // checkOneTimeToken
+var (
+	oneTimeTokenType1 = make(map[int64][]*UserOneTimeToken)
+	oneTimeTokenType2 = make(map[int64][]*UserOneTimeToken)
+)
+
 func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, requestAt int64) error {
+	if tokenType == 1 {
+		if tokens, ok := oneTimeTokenType1[userID]; ok {
+			valid := false
+			oneTimeTokenType1[userID] = make([]*UserOneTimeToken, 0)
+			for i := 0; i < len(tokens); i++ {
+				if tokens[i].Token == token && tokens[i].ExpiredAt > requestAt {
+					valid = true
+				} else if tokens[i].ExpiredAt > requestAt {
+					oneTimeTokenType1[userID] = append(oneTimeTokenType1[userID], tokens[i])
+				}
+			}
+			if valid {
+				// 使ったトークンを失効する
+				go func() {
+					query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
+					selectDatabase(userID).Exec(query, requestAt, token)
+				}()
+				return nil
+			}
+		}
+	} else if tokenType == 2 {
+		if tokens, ok := oneTimeTokenType2[userID]; ok {
+			valid := false
+			oneTimeTokenType2[userID] = make([]*UserOneTimeToken, 0)
+			for i := 0; i < len(tokens); i++ {
+				if tokens[i].Token == token && tokens[i].ExpiredAt > requestAt {
+					valid = true
+				} else if tokens[i].ExpiredAt > requestAt {
+					oneTimeTokenType2[userID] = append(oneTimeTokenType2[userID], tokens[i])
+				}
+			}
+			if valid {
+				// 使ったトークンを失効する
+				go func() {
+					query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE token=?"
+					selectDatabase(userID).Exec(query, requestAt, token)
+				}()
+				return nil
+			}
+		}
+	}
+
 	tk := userOneTimeTokenPool.get()
 	defer userOneTimeTokenPool.put(tk)
-	query := "SELECT * FROM user_one_time_tokens WHERE token=? AND token_type=? AND deleted_at IS NULL"
+	query := "SELECT `expired_at` FROM user_one_time_tokens WHERE token=? AND token_type=? AND deleted_at IS NULL"
 	if err := selectDatabase(userID).Get(tk, query, token, tokenType); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrInvalidToken
@@ -367,19 +405,21 @@ func (h *Handler) checkViewerID(userID int64, viewerID string) error {
 }
 
 // checkBan
+var (
+	userBan = make(map[int64]struct{})
+)
+
 func (h *Handler) checkBan(userID int64) (bool, error) {
-	if isIchidai {
-		_, ok := userBanCache.Get(strconv.Itoa(int(userID)))
-		if ok {
-			return false, nil
-		}
+	_, ok := userBan[userID]
+	if ok {
+		return false, nil
 	}
 
 	banUser := -1
 	query := "SELECT 1 FROM user_bans WHERE user_id=?"
 	if err := selectDatabase(userID).Get(&banUser, query, userID); err != nil {
 		if err == sql.ErrNoRows {
-			userBanCache.Set(strconv.Itoa(int(userID)), struct{}{})
+			userBan[userID] = struct{}{}
 			return false, nil
 		}
 		return false, err
@@ -845,9 +885,10 @@ func initialize(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	resetCache()
-
 	userDevices = make(map[int64]map[string]struct{})
+
+	oneTimeTokenType1 = make(map[int64][]*UserOneTimeToken)
+	oneTimeTokenType2 = make(map[int64][]*UserOneTimeToken)
 
 	inChecking = true
 	go func() {
@@ -865,8 +906,6 @@ func initializeOne(c *fiber.Ctx) error {
 		log.Printf("Failed to initialize %s: %v", string(out), err)
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-
-	resetCache()
 
 	return successResponse(c, &InitializeResponse{
 		Language: "go",
@@ -1251,10 +1290,6 @@ func (h *Handler) listGacha(c *fiber.Ctx) error {
 	}
 
 	// genearte one time token
-	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-	if _, err = selectDatabase(userID).Exec(query, requestAt, userID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
 	tID, err := h.generateID()
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1272,10 +1307,15 @@ func (h *Handler) listGacha(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 600,
 	}
-	query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-	if _, err = selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	oneTimeTokenType1[userID] = []*UserOneTimeToken{token}
+	delete(oneTimeTokenType2, userID)
+
+	go func() {
+		query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+		selectDatabase(userID).Exec(query, requestAt, userID)
+		query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+		selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt)
+	}()
 
 	return successResponse(c, &ListGachaResponse{
 		OneTimeToken: token.Token,
@@ -1675,11 +1715,6 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	// genearte one time token
-	query = "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
-	if _, err = selectDatabase(userID).Exec(query, requestAt, userID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
 	tID, err := h.generateID()
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
@@ -1697,10 +1732,15 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 600,
 	}
-	query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-	if _, err = selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	delete(oneTimeTokenType1, userID)
+	oneTimeTokenType2[userID] = []*UserOneTimeToken{token}
+	go func() {
+		// genearte one time token
+		query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
+		selectDatabase(userID).Exec(query, requestAt, userID)
+		query = "INSERT INTO user_one_time_tokens(id, user_id, token, token_type, created_at, updated_at, expired_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+		selectDatabase(userID).Exec(query, token.ID, token.UserID, token.Token, token.TokenType, token.CreatedAt, token.UpdatedAt, token.ExpiredAt)
+	}()
 
 	return successResponse(c, &ListItemResponse{
 		OneTimeToken: token.Token,

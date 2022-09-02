@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -68,36 +69,37 @@ func forceRecache(db *sqlx.DB) (string, error) {
 }
 
 func recache(db *sqlx.DB) error {
-	var query string
-	query = "SELECT * FROM item_masters"
-	if err := db.Select(&itemMaster, query); err != nil {
-		return err
-	}
+	eg := errgroup.Group{}
 
-	query = "SELECT * FROM gacha_masters ORDER BY display_order"
-	if err := db.Select(&gachaMaster, query); err != nil {
-		return err
-	}
+	eg.Go(func() error {
+		query := "SELECT * FROM item_masters"
+		return db.Select(&itemMaster, query)
+	})
 
-	query = "SELECT * FROM gacha_item_masters ORDER BY id ASC"
-	if err := db.Select(&gachaItemMaster, query); err != nil {
-		return err
-	}
+	eg.Go(func() error {
+		query := "SELECT * FROM gacha_masters ORDER BY display_order"
+		return db.Select(&gachaMaster, query)
+	})
 
-	query = "SELECT * FROM present_all_masters"
-	if err := db.Select(&presentAllMaster, query); err != nil {
-		return err
-	}
+	eg.Go(func() error {
+		query := "SELECT * FROM gacha_item_masters ORDER BY id ASC"
+		return db.Select(&gachaItemMaster, query)
+	})
 
-	query = "SELECT * FROM login_bonus_masters"
-	if err := db.Select(&loginBonusMaster, query); err != nil {
-		return err
-	}
+	eg.Go(func() error {
+		query := "SELECT * FROM present_all_masters"
+		return db.Select(&presentAllMaster, query)
+	})
 
-	query = "SELECT * FROM login_bonus_reward_masters"
-	if err := db.Select(&loginBonusRewardMaster, query); err != nil {
-		return err
-	}
+	eg.Go(func() error {
+		query := "SELECT * FROM login_bonus_masters"
+		return db.Select(&loginBonusMaster, query)
+	})
+
+	eg.Go(func() error {
+		query := "SELECT * FROM login_bonus_reward_masters"
+		return db.Select(&loginBonusRewardMaster, query)
+	})
 
 	return nil
 }
