@@ -89,12 +89,14 @@ innodb_file_per_table=ON # InnoDBのデータ領域をテーブルごとに変�
 innodb_log_buffer_size = 256MB
 
 # InnoDBの更新ログを記録するディスク上のファイルサイズ(innodb_buffer_pool_sizeの4分の1程度)
-innodb_log_file_size=1GB
+innodb_log_file_size=512MB
 
 # ORDER BYやGROUP BYのときに使われるメモリ上の領域
 innodb_sort_buffer_size = 128MB
 read_rnd_buffer_size = 64MB #
-key_buffer_size = 1GB # これも可能なら大きくした方が良い
+key_buffer_size = 0 # これも可能なら大きくした方が良い
+
+thread_cache_size = 1000 # スレッドキャッシュのサイズ
 
 disable-log-bin
 innodb_doublewrite = 0
@@ -102,3 +104,7 @@ innodb_doublewrite = 0
 # [MySQL 8.0.22 で innodb_log_writer_threads の効果を見てみる - Qiita](https://qiita.com/hmatsu47/items/06489ef05bfcaaf310f3)
 # CPUコアが少ない場合はOFF
 innodb_log_writer_threads = off
+
+skip-name-resolve=1
+
+innodb_buffer_pool_instances=4
