@@ -104,4 +104,4 @@ key_buffer_size = 1GB # これも可能なら大きくした方が良い
 character-set-server = utf8mb4
 
 [client]
-default-character-set = utf8mb4
+default-character-set=utf8mb4

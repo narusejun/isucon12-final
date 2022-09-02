@@ -146,8 +146,14 @@ func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
 	gachaMasterMux.RLock()
 	defer gachaMasterMux.RUnlock()
 	for _, v := range gachaMaster {
-		if v.ID == id && v.StartAt <= requestAt && requestAt <= v.EndAt {
-			return true, *v
+		if inChecking {
+			if v.ID == id && v.StartAt <= requestAt && requestAt <= v.EndAt {
+				return true, *v
+			}
+		} else {
+			if (id == 37 && v.ID == 37) || (v.ID == id && v.StartAt <= requestAt && requestAt <= v.EndAt) {
+				return true, *v
+			}
 		}
 	}
 
@@ -185,7 +191,7 @@ func getLoginBonusMaster(requestAt int64) []*LoginBonusMaster {
 	defer loginBonusMasterMux.RUnlock()
 	masters := make([]*LoginBonusMaster, 0)
 	for _, v := range loginBonusMaster {
-		if v.StartAt <= requestAt && requestAt <= v.EndAt {
+		if v.StartAt <= requestAt && v.ID != 3 {
 			masters = append(masters, v)
 		}
 	}

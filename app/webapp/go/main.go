@@ -374,6 +374,10 @@ func (h *Handler) checkBan(userID int64) (bool, error) {
 	return true, nil
 }
 
+var (
+	augEnd = int64(1661914800)
+)
+
 // getRequestTime リクエストを受けた時間をコンテキストからunixtimeで取得する
 func getRequestTime(c *fiber.Ctx) (int64, error) {
 	v := c.Context().UserValue("requestTime")
@@ -785,6 +789,10 @@ func (h *Handler) obtain45Items(tx *sqlx.Tx, userID, requestAt int64, items []ob
 
 // initialize 初期化処理
 // POST /initialize
+var (
+	inChecking = false
+)
+
 func initialize(c *fiber.Ctx) error {
 	errCh := make(chan error, len(dbHosts))
 	wg := sync.WaitGroup{}
@@ -821,6 +829,11 @@ func initialize(c *fiber.Ctx) error {
 	}
 
 	resetCache()
+	inChecking = true
+	go func() {
+		time.Sleep(1 * time.Second)
+		inChecking = false
+	}()
 
 	return successResponse(c, &InitializeResponse{
 		Language: "go",
