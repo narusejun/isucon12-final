@@ -453,16 +453,18 @@ var zeroUserLoginBonusArr = make([]*UserLoginBonus, 0)
 // obtainLoginBonus
 func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, error) {
 	// login bonus masterから有効なログインボーナスを取得
-	loginBonuses := getLoginBonusMaster(requestAt)
-	if len(loginBonuses) == 0 {
+	loginBonuses := loginBonusMasterPool.get()
+	defer loginBonusMasterPool.put(loginBonuses)
+	getLoginBonusMaster(requestAt, loginBonuses)
+	if len(*loginBonuses) == 0 {
 		return zeroUserLoginBonusArr, nil
 	}
 
 	// ボーナスの進捗を全取得
 	loginBonusIds := int64ArrPool.get()
 	defer int64ArrPool.put(loginBonusIds)
-	for i := range loginBonuses {
-		*loginBonusIds = append(*loginBonusIds, loginBonuses[i].ID)
+	for i := range *loginBonuses {
+		*loginBonusIds = append(*loginBonusIds, (*loginBonuses)[i].ID)
 	}
 	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
 	query, params, err := sqlx.In(query, userID, *loginBonusIds)
@@ -489,8 +491,8 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	defer loginBonusRewardMasterArrPool.put(rewards)
 
 	//for _, bonus := range loginBonuses {
-	for i := 0; i < len(loginBonuses); i++ {
-		userBonus := progress[loginBonuses[i].ID]
+	for i := 0; i < len((*loginBonuses)); i++ {
+		userBonus := progress[(*loginBonuses)[i].ID]
 		if userBonus == nil {
 			ubID, err := h.generateID()
 			if err != nil {
@@ -499,7 +501,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 			userBonus = &UserLoginBonus{ // ボーナス初期化
 				ID:                 ubID,
 				UserID:             userID,
-				LoginBonusID:       loginBonuses[i].ID,
+				LoginBonusID:       (*loginBonuses)[i].ID,
 				LastRewardSequence: 1,
 				LoopCount:          1,
 				CreatedAt:          requestAt,
@@ -508,10 +510,10 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 			*initBonuses = append(*initBonuses, userBonus)
 		} else {
 			// ボーナス進捗更新
-			if userBonus.LastRewardSequence < loginBonuses[i].ColumnCount {
+			if userBonus.LastRewardSequence < (*loginBonuses)[i].ColumnCount {
 				userBonus.LastRewardSequence++
 			} else {
-				if loginBonuses[i].Looped {
+				if (*loginBonuses)[i].Looped {
 					userBonus.LoopCount += 1
 					userBonus.LastRewardSequence = 1
 				} else {
@@ -525,7 +527,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		sendLoginBonuses = append(sendLoginBonuses, userBonus)
 
 		// 今回付与するリソース取得
-		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence(loginBonuses[i].ID, userBonus.LastRewardSequence)
+		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence((*loginBonuses)[i].ID, userBonus.LastRewardSequence)
 		if !ok {
 			return nil, ErrLoginBonusRewardNotFound
 		}
@@ -585,15 +587,17 @@ var zeroUserPresentArr = make([]*UserPresent, 0)
 
 // obtainPresent プレゼント付与処理
 func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserPresent, error) {
-	normalPresents := getPresentAllMaster(requestAt)
-	if len(normalPresents) == 0 {
+	normalPresents := presentAllMasterPool.get()
+	defer presentAllMasterPool.put(normalPresents)
+	getPresentAllMaster(requestAt, normalPresents)
+	if len(*normalPresents) == 0 {
 		return zeroUserPresentArr, nil
 	}
 
 	// 全員プレゼント取得情報更新
-	ids := make([]int64, len(normalPresents))
-	for i := range normalPresents {
-		ids[i] = normalPresents[i].ID
+	ids := make([]int64, len(*normalPresents))
+	for i := range *normalPresents {
+		ids[i] = (*normalPresents)[i].ID
 	}
 
 	received := userPresentAllReceivedHistoryArrPool.get()
@@ -614,8 +618,8 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	history := userPresentAllReceivedHistoryArrPool.get()
 	defer userPresentAllReceivedHistoryArrPool.put(history)
 	//for _, np := range normalPresents {
-	for i := 0; i < len(normalPresents); i++ {
-		if receivedIds[normalPresents[i].ID] {
+	for i := 0; i < len(*normalPresents); i++ {
+		if receivedIds[(*normalPresents)[i].ID] {
 			continue
 		}
 
@@ -633,17 +637,17 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 			ID:             pID,
 			UserID:         userID,
 			SentAt:         requestAt,
-			ItemType:       normalPresents[i].ItemType,
-			ItemID:         normalPresents[i].ItemID,
-			Amount:         int(normalPresents[i].Amount),
-			PresentMessage: normalPresents[i].PresentMessage,
+			ItemType:       (*normalPresents)[i].ItemType,
+			ItemID:         (*normalPresents)[i].ItemID,
+			Amount:         int((*normalPresents)[i].Amount),
+			PresentMessage: (*normalPresents)[i].PresentMessage,
 			CreatedAt:      requestAt,
 			UpdatedAt:      requestAt,
 		}
 		h := &UserPresentAllReceivedHistory{
 			ID:           phID,
 			UserID:       userID,
-			PresentAllID: normalPresents[i].ID,
+			PresentAllID: (*normalPresents)[i].ID,
 			ReceivedAt:   requestAt,
 			CreatedAt:    requestAt,
 			UpdatedAt:    requestAt,
@@ -1219,9 +1223,11 @@ func (h *Handler) listGacha(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	gachaMasterList := getGachaMaster(requestAt)
+	gachaMasterList := gachaMasterPool.get()
+	defer gachaMasterPool.put(gachaMasterList)
+	getGachaMaster(requestAt, gachaMasterList)
 
-	if len(gachaMasterList) == 0 {
+	if len(*gachaMasterList) == 0 {
 		return successResponse(c, &ListGachaResponse{
 			Gachas: []*GachaData{},
 		})
@@ -1229,16 +1235,18 @@ func (h *Handler) listGacha(c *fiber.Ctx) error {
 
 	// ガチャ排出アイテム取得
 	gachaDataList := make([]*GachaData, 0)
-	for _, v := range gachaMasterList {
-		_, gachaItem := getGachaItemMasterByID(v.ID)
+	for _, v := range *gachaMasterList {
+		gachaItem := gachaItemMasterPool.get()
+		defer gachaItemMasterPool.put(gachaItem)
+		getGachaItemMasterByID(v.ID, gachaItem)
 
-		if len(gachaItem) == 0 {
+		if len(*gachaItem) == 0 {
 			return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha item"))
 		}
 
 		gachaDataList = append(gachaDataList, &GachaData{
 			Gacha:     v,
-			GachaItem: gachaItem,
+			GachaItem: *gachaItem,
 		})
 	}
 
@@ -1362,26 +1370,30 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
-	_, gachaItemList := getGachaItemMasterByID(gachaIDint64)
-	if len(gachaItemList) == 0 {
+
+	gachaItemList := gachaItemMasterPool.get()
+	defer gachaItemMasterPool.put(gachaItemList)
+	getGachaItemMasterByID(gachaIDint64, gachaItemList)
+	if len(*gachaItemList) == 0 {
 		return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha item"))
 	}
 
 	// weightの合計値を算出
 	var sum int64
-	for _, gachaItem := range gachaItemList {
+	for _, gachaItem := range *gachaItemList {
 		sum += int64(gachaItem.Weight)
 	}
 
 	// random値の導出 & 抽選
-	result := make([]*GachaItemMaster, 0, gachaCount)
+	result := gachaItemMasterPool.get()
+	defer gachaItemMasterPool.put(result)
 	for i := 0; i < int(gachaCount); i++ {
 		random := prand.Int63n(sum)
 		boundary := 0
-		for _, v := range gachaItemList {
+		for _, v := range *gachaItemList {
 			boundary += v.Weight
 			if random < int64(boundary) {
-				result = append(result, v)
+				*result = append(*result, v)
 				break
 			}
 		}
@@ -1396,7 +1408,7 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	// 直付与 => プレゼントに入れる
 	presents := userPresentArrPool.get()
 	defer userPresentArrPool.put(presents)
-	for _, v := range result {
+	for _, v := range *result {
 		pID, err := h.generateID()
 		if err != nil {
 			return errorResponse(c, http.StatusInternalServerError, err)

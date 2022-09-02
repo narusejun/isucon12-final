@@ -9,12 +9,18 @@ var (
 	masterVersion = "nothing"
 	sf            = &singleflight.Group{}
 
-	itemMaster             = make([]*ItemMaster, 0)
-	gachaMaster            = make([]*GachaMaster, 0)
-	gachaItemMaster        = make([]*GachaItemMaster, 0)
-	presentAllMaster       = make([]*PresentAllMaster, 0)
-	loginBonusMaster       = make([]*LoginBonusMaster, 0)
-	loginBonusRewardMaster = make([]*LoginBonusRewardMaster, 0)
+	itemMaster                 = make([]*ItemMaster, 0)
+	itemMasterPool             = newArrPool[*ItemMaster](100)
+	gachaMaster                = make([]*GachaMaster, 0)
+	gachaMasterPool            = newArrPool[*GachaMaster](100)
+	gachaItemMaster            = make([]*GachaItemMaster, 0)
+	gachaItemMasterPool        = newArrPool[*GachaItemMaster](100)
+	presentAllMaster           = make([]*PresentAllMaster, 0)
+	presentAllMasterPool       = newArrPool[*PresentAllMaster](100)
+	loginBonusMaster           = make([]*LoginBonusMaster, 0)
+	loginBonusMasterPool       = newArrPool[*LoginBonusMaster](100)
+	loginBonusRewardMaster     = make([]*LoginBonusRewardMaster, 0)
+	loginBonusRewardMasterPool = newArrPool[*LoginBonusRewardMaster](100)
 )
 var (
 	isIchidai bool
@@ -106,15 +112,12 @@ func getItemMasterByID(id int64) (bool, ItemMaster) {
 	return false, ItemMaster{}
 }
 
-func getGachaMaster(requestAt int64) []*GachaMaster {
-	masters := make([]*GachaMaster, 0)
+func getGachaMaster(requestAt int64, masters *[]*GachaMaster) {
 	for _, v := range gachaMaster {
 		if v.StartAt <= requestAt && requestAt <= v.EndAt {
-			masters = append(masters, v)
+			*masters = append(*masters, v)
 		}
 	}
-
-	return masters
 }
 
 func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
@@ -133,37 +136,28 @@ func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
 	return false, GachaMaster{}
 }
 
-func getGachaItemMasterByID(id int64) (bool, []*GachaItemMaster) {
-	gachaItems := make([]*GachaItemMaster, 0)
+func getGachaItemMasterByID(id int64, gachaItems *[]*GachaItemMaster) {
 	for _, v := range gachaItemMaster {
 		if v.GachaID == id {
-			gachaItems = append(gachaItems, v)
+			*gachaItems = append(*gachaItems, v)
 		}
 	}
-
-	return len(gachaItems) != 0, gachaItems
 }
 
-func getPresentAllMaster(requestAt int64) []*PresentAllMaster {
-	masters := make([]*PresentAllMaster, 0)
+func getPresentAllMaster(requestAt int64, masters *[]*PresentAllMaster) {
 	for _, v := range presentAllMaster {
 		if v.RegisteredStartAt <= requestAt && requestAt <= v.RegisteredEndAt {
-			masters = append(masters, v)
+			*masters = append(*masters, v)
 		}
 	}
-
-	return masters
 }
 
-func getLoginBonusMaster(requestAt int64) []*LoginBonusMaster {
-	masters := make([]*LoginBonusMaster, 0)
+func getLoginBonusMaster(requestAt int64, masters *[]*LoginBonusMaster) {
 	for _, v := range loginBonusMaster {
 		if v.StartAt <= requestAt && v.ID != 3 {
-			masters = append(masters, v)
+			*masters = append(*masters, v)
 		}
 	}
-
-	return masters
 }
 
 func getLoginBonusRewardMasterByIDAndSequence(loginBonusID int64, rewardSequence int) (bool, LoginBonusRewardMaster) {
