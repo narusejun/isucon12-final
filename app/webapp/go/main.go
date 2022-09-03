@@ -22,10 +22,10 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/mono0x/prand"
 	"github.com/pkg/errors"
+	"github.com/rs/xid"
 )
 
 var (
@@ -131,8 +131,6 @@ func main() {
 			log.Printf("failed to unmarshal: %v", err)
 		}
 	}
-
-	go genUUID()
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
@@ -2247,16 +2245,9 @@ var (
 	uuidCh = make(chan string, 10000)
 )
 
-func genUUID() {
-	for {
-		uuidCh <- uuid.NewString()
-	}
-}
-
 // generateSessionID
 func generateUUID() (string, error) {
-	id := <-uuidCh
-	return id, nil
+	return xid.New().String(), nil
 }
 
 // getUserID gets userID by path param.
