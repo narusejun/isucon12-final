@@ -94,14 +94,18 @@ innodb_sort_buffer_size = 128MB
 read_rnd_buffer_size = 64MB #
 key_buffer_size = 1GB # これも可能なら大きくした方が良い
 
-# disable-log-bin
-# innodb_doublewrite = 0
+disable-log-bin
+innodb_doublewrite = 0
 #
 # # [MySQL 8.0.22 で innodb_log_writer_threads の効果を見てみる - Qiita](https://qiita.com/hmatsu47/items/06489ef05bfcaaf310f3)
 # # CPUコアが少ない場合はOFF
 # innodb_log_writer_threads = off
 
-character-set-server = utf8mb4
+skip-name-resolve=1
+thread_cache_size=10
 
-[client]
-default-character-set=utf8mb4
+aria-pagecache-buffer-size=1GB
+thread-handling=pool-of-threads
+
+query_cache_size=0
+query_cache_type=OFF
