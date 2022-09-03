@@ -18,8 +18,11 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.0.4 // indirect
+	github.com/chzyer/readline v1.5.0 // indirect
 	github.com/gofiber/fiber/v2 v2.36.0 // indirect
 	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
+	github.com/google/pprof v0.0.0-20220829040838-70bd9ae97f40 // indirect
+	github.com/ianlancetaylor/demangle v0.0.0-20220319035150-800ac71e25c2 // indirect
 	github.com/klauspost/compress v1.15.0 // indirect
 	github.com/labstack/gommon v0.3.1 // indirect
 	github.com/mattn/go-colorable v0.1.11 // indirect

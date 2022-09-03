@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"strconv"
@@ -57,6 +58,10 @@ type Handler struct {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	time.Local = time.FixedZone("Local", 9*60*60)
+
+	go func() {
+		http.ListenAndServe(":6060", nil)
+	}()
 
 	//runtime.GOMAXPROCS(1)
 
