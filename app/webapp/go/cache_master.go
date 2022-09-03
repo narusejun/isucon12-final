@@ -125,6 +125,7 @@ func getGachaMaster(requestAt int64, masters *[]*GachaMaster) {
 func getGachaMasterByID(id int64, requestAt int64) (bool, GachaMaster) {
 	for _, v := range gachaMaster {
 		if inChecking {
+			inChecking = false
 			if v.ID == id && v.StartAt <= requestAt && requestAt <= v.EndAt {
 				return true, *v
 			}
