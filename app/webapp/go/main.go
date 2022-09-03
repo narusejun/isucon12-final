@@ -126,6 +126,8 @@ func main() {
 		}
 	}
 
+	go genUUID()
+
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Content-Type, x-master-version, x-session",
@@ -2235,14 +2237,20 @@ func (h *Handler) generateID() (int64, error) {
 	return h.snowflakeNode.Generate().Int64(), nil
 }
 
+var (
+	uuidCh = make(chan string, 10000)
+)
+
+func genUUID() {
+	for {
+		uuidCh <- uuid.NewString()
+	}
+}
+
 // generateSessionID
 func generateUUID() (string, error) {
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return "", err
-	}
-
-	return id.String(), nil
+	id := <-uuidCh
+	return id, nil
 }
 
 // getUserID gets userID by path param.
