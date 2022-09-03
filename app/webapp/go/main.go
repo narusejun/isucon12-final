@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -84,31 +87,6 @@ func main() {
 	//
 	//	return nil
 	//})
-
-	app.Hooks().OnShutdown(func() error {
-		buf, err := json.Marshal(oneTimeTokenType1)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile("user_one_time_tokens_type1.json", buf, 0777); err != nil {
-			return err
-		}
-		buf, err = json.Marshal(oneTimeTokenType2)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile("user_one_time_tokens_type2.json", buf, 0777); err != nil {
-			return err
-		}
-		buf, err = json.Marshal(userSession)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile("user_session.json", buf, 0777); err != nil {
-			return err
-		}
-		return nil
-	})
 
 	if buf, err := os.ReadFile("user_one_time_tokens_type1.json"); err != nil {
 		log.Printf("failed to read file: %v", err)
@@ -188,6 +166,8 @@ func main() {
 		log.Fatal(err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt, os.Kill)
+	defer stop()
 	// setting server
 	if getEnv("UNIX_DOMAIN_SOCKET", "") != "" {
 		os.MkdirAll("/var/run", 0777)
@@ -205,9 +185,40 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		app.Listener(l)
+		go app.Listener(l)
 	} else {
-		app.Listen("0.0.0.0:" + getEnv("ISUCON_LISTEN_PORT", "8080"))
+		go app.Listen("0.0.0.0:" + getEnv("ISUCON_LISTEN_PORT", "8080"))
+	}
+	<-ctx.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	buf, err := json.Marshal(oneTimeTokenType1)
+	if err != nil {
+		log.Printf("failed to marshal: %v", err)
+	}
+	if err := os.WriteFile("user_one_time_tokens_type1.json", buf, 0777); err != nil {
+		log.Printf("failed to write file: %v", err)
+	} else {
+		log.Print("write user_one_time_tokens_type1.json")
+	}
+	buf, err = json.Marshal(oneTimeTokenType2)
+	if err != nil {
+		log.Printf("failed to marshal: %v", err)
+	}
+	if err := os.WriteFile("user_one_time_tokens_type2.json", buf, 0777); err != nil {
+		log.Printf("failed to write file: %v", err)
+	} else {
+		log.Print("write user_one_time_tokens_type2.json")
+	}
+	buf, err = json.Marshal(userSession)
+	if err != nil {
+		log.Printf("failed to marshal: %v", err)
+	}
+	if err := os.WriteFile("user_session.json", buf, 0777); err != nil {
+		log.Printf("failed to write file: %v", err)
+	} else {
+		log.Print("write user_session.json")
 	}
 }
 
