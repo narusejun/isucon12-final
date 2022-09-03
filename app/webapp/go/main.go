@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/snowflake"
+	"github.com/bytedance/sonic"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -67,8 +68,8 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		//Prefork:     true,
-		JSONEncoder: json.Marshal,
-		JSONDecoder: json.Unmarshal,
+		JSONEncoder: sonic.Marshal,
+		JSONDecoder: sonic.Unmarshal,
 		Concurrency: 1000000,
 	})
 
