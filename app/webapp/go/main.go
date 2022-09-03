@@ -453,16 +453,9 @@ func getRequestTime(c *fiber.Ctx) (int64, error) {
 // loginProcess ログイン処理
 func (h *Handler) loginProcess(tx *sqlx.Tx, userID int64, requestAt int64) (*User, []*UserLoginBonus, []*UserPresent, error) {
 	user := new(User)
-	query := "SELECT * FROM users WHERE id=?"
-	if err := tx.Get(user, query, userID); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil, nil, ErrUserNotFound
-		}
-		return nil, nil, nil, err
-	}
 
 	// ログインボーナス処理
-	loginBonuses, err := h.obtainLoginBonus(tx, userID, requestAt)
+	loginBonuses, addIsuCoin, err := h.obtainLoginBonus(tx, userID, requestAt)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -473,7 +466,8 @@ func (h *Handler) loginProcess(tx *sqlx.Tx, userID int64, requestAt int64) (*Use
 		return nil, nil, nil, err
 	}
 
-	if err = tx.Get(&user.IsuCoin, "SELECT isu_coin FROM users WHERE id=?", user.ID); err != nil {
+	query := "SELECT id, isu_coin, last_getreward_at, registered_at, created_at, deleted_at FROM users WHERE id=?"
+	if err := tx.Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil, nil, ErrUserNotFound
 		}
@@ -482,9 +476,10 @@ func (h *Handler) loginProcess(tx *sqlx.Tx, userID int64, requestAt int64) (*Use
 
 	user.UpdatedAt = requestAt
 	user.LastActivatedAt = requestAt
+	user.IsuCoin += addIsuCoin
 
-	query = "UPDATE users SET updated_at=?, last_activated_at=? WHERE id=?"
-	if _, err := tx.Exec(query, requestAt, requestAt, userID); err != nil {
+	query = "UPDATE users SET updated_at=?, last_activated_at=?, isu_coin=? WHERE id=?"
+	if _, err := tx.Exec(query, requestAt, requestAt, user.IsuCoin, userID); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -501,13 +496,13 @@ func isCompleteTodayLogin(lastActivatedAt, requestAt time.Time) bool {
 var zeroUserLoginBonusArr = make([]*UserLoginBonus, 0)
 
 // obtainLoginBonus
-func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, error) {
+func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, int64, error) {
 	// login bonus masterから有効なログインボーナスを取得
 	loginBonuses := loginBonusMasterPool.get()
 	defer loginBonusMasterPool.put(loginBonuses)
 	getLoginBonusMaster(requestAt, loginBonuses)
 	if len(*loginBonuses) == 0 {
-		return zeroUserLoginBonusArr, nil
+		return zeroUserLoginBonusArr, 0, nil
 	}
 
 	// ボーナスの進捗を全取得
@@ -519,12 +514,12 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
 	query, params, err := sqlx.In(query, userID, *loginBonusIds)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, 0, errors.WithStack(err)
 	}
 	_progress := userLoginBonusArrPool.get()
 	defer userLoginBonusArrPool.put(_progress)
 	if err := tx.Select(_progress, query, params...); err != nil {
-		return nil, errors.WithStack(err)
+		return nil, 0, errors.WithStack(err)
 	}
 	progress := make(map[int64]*UserLoginBonus, len(*_progress))
 	//for _, bonus := range _progress {
@@ -546,7 +541,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		if userBonus == nil {
 			ubID, err := h.generateID()
 			if err != nil {
-				return nil, errors.WithStack(err)
+				return nil, 0, errors.WithStack(err)
 			}
 			userBonus = &UserLoginBonus{ // ボーナス初期化
 				ID:                 ubID,
@@ -579,7 +574,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		// 今回付与するリソース取得
 		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence((*loginBonuses)[i].ID, userBonus.LastRewardSequence)
 		if !ok {
-			return nil, ErrLoginBonusRewardNotFound
+			return nil, 0, ErrLoginBonusRewardNotFound
 		}
 		*rewards = append(*rewards, &rewardItem)
 	}
@@ -587,7 +582,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	if len(*initBonuses) > 0 {
 		query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (:id, :user_id, :login_bonus_id, :last_reward_sequence, :loop_count, :created_at, :updated_at)"
 		if _, err = tx.NamedExec(query, *initBonuses); err != nil {
-			return nil, errors.WithStack(err)
+			return nil, 0, errors.WithStack(err)
 		}
 	}
 	if len(*progressBonuses) > 0 {
@@ -595,15 +590,15 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		//for _, userBonus := range progressBonuses {
 		for i := 0; i < len(*progressBonuses); i++ {
 			if _, err = tx.Exec(query, (*progressBonuses)[i].LastRewardSequence, (*progressBonuses)[i].LoopCount, (*progressBonuses)[i].UpdatedAt, (*progressBonuses)[i].ID); err != nil {
-				return nil, errors.WithStack(err)
+				return nil, 0, errors.WithStack(err)
 			}
 		}
 	}
+	coinAmount := int64(0)
 	if len(*rewards) > 0 {
 		var (
-			coinAmount int64
-			cardIDs    []int64
-			item45s    []obtain45Item
+			cardIDs []int64
+			item45s []obtain45Item
 		)
 		for i := range *rewards {
 			switch (*rewards)[i].ItemType {
@@ -619,18 +614,18 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 			}
 		}
 
-		if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
-			return nil, errors.WithStack(err)
-		}
+		//if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
+		//	return nil, errors.WithStack(err)
+		//}
 		if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
-			return nil, errors.WithStack(err)
+			return nil, 0, errors.WithStack(err)
 		}
 		if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
-			return nil, errors.WithStack(err)
+			return nil, 0, errors.WithStack(err)
 		}
 	}
 
-	return sendLoginBonuses, nil
+	return sendLoginBonuses, coinAmount, nil
 }
 
 var zeroUserPresentArr = make([]*UserPresent, 0)
