@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -37,6 +36,7 @@ var (
 	ErrInvalidItemType          error = fmt.Errorf("invalid item type")
 	ErrInvalidToken             error = fmt.Errorf("invalid token")
 	ErrGetRequestTime           error = fmt.Errorf("failed to get request time")
+	ErrGetUserID                error = fmt.Errorf("failed to get user id")
 	ErrExpiredSession           error = fmt.Errorf("session expired")
 	ErrUserNotFound             error = fmt.Errorf("not found user")
 	ErrUserDeviceNotFound       error = fmt.Errorf("not found user device")
@@ -283,16 +283,15 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 	}
 
-	sesssionUserIDStrs := strings.Split(sessID, "::")
-	if len(sesssionUserIDStrs) != 2 {
+	if len(sessID) <= 22 {
 		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 	}
-	sesssionUserID, err := strconv.ParseInt(sesssionUserIDStrs[1], 10, 64)
+	sesssionUserID, err := strconv.ParseInt(sessID[22:], 10, 64)
 	if err != nil {
 		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 	}
 
-	userID, err := getUserID(c)
+	userID, err := strconv.ParseInt(c.Params("userID"), 10, 64)
 	if err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -324,6 +323,7 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 	}
 
+	c.Context().SetUserValue("userID", userID)
 	// next
 	return c.Next()
 }
@@ -1345,11 +1345,13 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid gachaID"))
 	}
 
-	gachaCount, err := strconv.ParseInt(c.Params("n"), 10, 64)
-	if err != nil {
-		return errorResponse(c, http.StatusBadRequest, err)
-	}
-	if gachaCount != 1 && gachaCount != 10 {
+	n := c.Params("n")
+	gachaCount := 0
+	if n == "1" {
+		gachaCount = 1
+	} else if n == "10" {
+		gachaCount = 10
+	} else {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid draw gacha times"))
 	}
 
@@ -1402,12 +1404,6 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	ok, gachaInfo := getGachaMasterByID(gachaIDint64, requestAt)
 	if !ok {
 		return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found gacha"))
-	}
-
-	// gachaItemMasterからアイテムリスト取得
-	gachaIDint64, err = strconv.ParseInt(gachaID, 10, 64)
-	if err != nil {
-		return errorResponse(c, http.StatusBadRequest, err)
 	}
 
 	gachaItemList := gachaItemMasterPool.get()
@@ -2258,7 +2254,11 @@ func generateUUID() (string, error) {
 
 // getUserID gets userID by path param.
 func getUserID(c *fiber.Ctx) (int64, error) {
-	return strconv.ParseInt(c.Params("userID"), 10, 64)
+	v := c.Context().UserValue("userID")
+	if userID, ok := v.(int64); ok {
+		return userID, nil
+	}
+	return 0, ErrGetUserID
 }
 
 // getEnv gets environment variable.

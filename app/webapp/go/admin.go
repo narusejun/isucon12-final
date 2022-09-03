@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -42,6 +43,15 @@ func (h *Handler) adminSessionCheckMiddleware(c *fiber.Ctx) error {
 			return errorResponse(c, http.StatusInternalServerError, err)
 		}
 		return errorResponse(c, http.StatusUnauthorized, ErrExpiredSession)
+	}
+
+	userIDStr := c.Params("userID")
+	if userIDStr != "" {
+		userID, err := strconv.ParseInt(userIDStr, 10, 64)
+		if err != nil {
+			return errorResponse(c, http.StatusBadRequest, err)
+		}
+		c.Context().SetUserValue("userID", userID)
 	}
 
 	// next
