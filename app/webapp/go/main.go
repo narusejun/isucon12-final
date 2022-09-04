@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -245,9 +246,13 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 	}
 	c.Context().SetUserValue("userID", userID)
 
-	if lock, ok := initializingUserMap[userID]; ok {
-		lock.Lock()
-		lock.Unlock()
+	if _, ok := userOpsLock[userID]; ok {
+		if _, ok := homeCache[userID]; strings.HasSuffix(c.Path(), "/home") && ok {
+
+		} else {
+			userOpsLock[userID].Lock()
+			userOpsLock[userID].Unlock()
+		}
 	}
 
 	// マスタ確認
@@ -1110,6 +1115,10 @@ func initialize(c *fiber.Ctx) error {
 
 	userSession = make(map[int64][]*Session)
 
+	homeCache = make(map[int64]*HomeResponse)
+
+	userOpsLock = make(map[int64]*sync.Mutex)
+
 	inChecking = true
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -1139,7 +1148,7 @@ type InitializeResponse struct {
 // createUser ユーザの作成
 // POST /user
 var (
-	initializingUserMap = make(map[int64]*sync.Mutex)
+	userOpsLock = make(map[int64]*sync.Mutex)
 )
 
 func (h *Handler) createUser(c *fiber.Ctx) error {
@@ -1201,6 +1210,7 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 	}
 
 	initCards := make([]*UserCard, 0, 3)
+	totalAmountPerSec := 0
 	for i := 0; i < 3; i++ {
 		cID, err := h.generateID()
 		if err != nil {
@@ -1217,6 +1227,7 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 			UpdatedAt:    requestAt,
 		}
 		initCards = append(initCards, card)
+		totalAmountPerSec += *initCard.AmountPerSec
 	}
 
 	deckID, err := h.generateID()
@@ -1269,11 +1280,10 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 	}
 	userSession[user.ID] = append(userSession[user.ID], sess)
 
-	initializingUserMap[user.ID] = &sync.Mutex{}
-	initializingUserMap[user.ID].Lock()
+	userOpsLock[user.ID] = &sync.Mutex{}
+	userOpsLock[user.ID].Lock()
 	go func() {
-		defer initializingUserMap[user.ID].Unlock()
-		defer delete(initializingUserMap, user.ID)
+		defer userOpsLock[user.ID].Unlock()
 		tx, err := selectDatabase(uID).Beginx()
 		if err != nil {
 			log.Printf("failed to begin transaction: %v", err)
@@ -1320,6 +1330,12 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 			return // errorResponse(c, http.StatusInternalServerError, err)
 		}
 	}()
+
+	homeCache[user.ID] = &HomeResponse{
+		User:              user,
+		Deck:              initDeck,
+		TotalAmountPerSec: totalAmountPerSec,
+	}
 
 	return successResponse(c, &CreateUserResponse{
 		UserID:           user.ID,
@@ -1455,6 +1471,10 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	err = tx.Commit()
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
+	}
+
+	if _, ok := homeCache[user.ID]; ok {
+		delete(homeCache, user.ID)
 	}
 
 	return successResponse(c, &LoginResponse{
@@ -1831,11 +1851,17 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		}
 	}
 
-	initializingUserMap[userID] = &sync.Mutex{}
-	initializingUserMap[userID].Lock()
+	if _, ok := homeCache[userID]; ok {
+		delete(homeCache, userID)
+	}
+
+	if _, ok := userOpsLock[userID]; !ok {
+		userOpsLock[userID] = &sync.Mutex{}
+	}
+	userOpsLock[userID].Lock()
 	go func() {
-		defer initializingUserMap[userID].Unlock()
-		defer delete(initializingUserMap, userID)
+		defer userOpsLock[userID].Unlock()
+
 		defer userPresentArrPool.put(obtainPresent)
 		tx, err := selectDatabase(userID).Beginx()
 		if err != nil {
@@ -2279,6 +2305,10 @@ func (h *Handler) updateDeck(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
+	if _, ok := homeCache[userID]; ok {
+		delete(homeCache, userID)
+	}
+
 	return successResponse(c, &UpdateDeckResponse{
 		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, []*UserDeck{newDeck}, nil, nil, nil),
 	})
@@ -2365,6 +2395,10 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
+	if _, ok := homeCache[userID]; ok {
+		delete(homeCache, userID)
+	}
+
 	return successResponse(c, &RewardResponse{
 		UpdatedResources: makeUpdatedResources(requestAt, user, nil, nil, nil, nil, nil, nil),
 	})
@@ -2380,6 +2414,10 @@ type RewardResponse struct {
 
 // home ホーム取得
 // GET /user/{userID}/home
+var (
+	homeCache = make(map[int64]*HomeResponse)
+)
+
 func (h *Handler) home(c *fiber.Ctx) error {
 	userID, err := getUserID(c)
 	if err != nil {
@@ -2389,6 +2427,14 @@ func (h *Handler) home(c *fiber.Ctx) error {
 	requestAt, err := getRequestTime(c)
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
+	}
+
+	// キャッシュがあれば返す
+	if res, ok := homeCache[userID]; ok {
+		pastTime := requestAt - res.User.LastGetRewardAt
+		res.Now = requestAt
+		res.PastTime = pastTime
+		return successResponse(c, res)
 	}
 
 	// 装備情報
@@ -2432,13 +2478,16 @@ func (h *Handler) home(c *fiber.Ctx) error {
 	}
 	pastTime := requestAt - user.LastGetRewardAt
 
-	return successResponse(c, &HomeResponse{
+	res := &HomeResponse{
 		Now:               requestAt,
 		User:              user,
 		Deck:              deck,
 		TotalAmountPerSec: totalAmountPerSec,
 		PastTime:          pastTime,
-	})
+	}
+	homeCache[userID] = res
+
+	return successResponse(c, res)
 }
 
 type HomeResponse struct {
