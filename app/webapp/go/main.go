@@ -1822,7 +1822,6 @@ type ListPresentResponse struct {
 func (h *Handler) receivePresent(c *fiber.Ctx) error {
 	// read body
 	req := receivePresentRequestPool.get()
-	defer receivePresentRequestPool.put(req)
 	if err := parseRequestBody(c, req); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1902,7 +1901,7 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 	lock.Lock()
 	go func() {
 		defer lock.Unlock()
-
+		defer receivePresentRequestPool.put(req)
 		defer userPresentArrPool.put(obtainPresent)
 		ok := false
 		for !ok {
@@ -2400,53 +2399,57 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	// 最後に取得した報酬時刻取得
-	user := userPool.get()
-	defer userPool.put(user)
-	query := "SELECT * FROM users WHERE id=?"
-	if err = selectDatabase(userID).Get(user, query, userID); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusNotFound, ErrUserNotFound)
+	var user *User
+	var totalAmountPerSec int
+	if homeRes, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		user = homeRes.User
+		totalAmountPerSec = homeRes.TotalAmountPerSec
+	} else {
+		// 最後に取得した報酬時刻取得
+		user = userPool.get()
+		defer userPool.put(user)
+		query := "SELECT * FROM users WHERE id=?"
+		if err = selectDatabase(userID).Get(user, query, userID); err != nil {
+			if err == sql.ErrNoRows {
+				return errorResponse(c, http.StatusNotFound, ErrUserNotFound)
+			}
+			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
 
-	// 使っているデッキの取得
-	deck := userDeckPool.get()
-	defer userDeckPool.put(deck)
-	query = "SELECT * FROM user_decks WHERE user_id=? AND deleted_at IS NULL"
-	if err = selectDatabase(userID).Get(deck, query, userID); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusNotFound, err)
+		// 使っているデッキの取得
+		deck := userDeckPool.get()
+		defer userDeckPool.put(deck)
+		query = "SELECT * FROM user_decks WHERE user_id=? AND deleted_at IS NULL"
+		if err = selectDatabase(userID).Get(deck, query, userID); err != nil {
+			if err == sql.ErrNoRows {
+				return errorResponse(c, http.StatusNotFound, err)
+			}
+			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
 
-	cards := userCardArrPool.get()
-	defer userCardArrPool.put(cards)
-	query = "SELECT * FROM user_cards WHERE id IN (?, ?, ?)"
-	if err = selectDatabase(userID).Select(cards, query, deck.CardID1, deck.CardID2, deck.CardID3); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	if len(*cards) != 3 {
-		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid cards length"))
+		cards := userCardArrPool.get()
+		defer userCardArrPool.put(cards)
+		query = "SELECT * FROM user_cards WHERE id IN (?, ?, ?)"
+		if err = selectDatabase(userID).Select(cards, query, deck.CardID1, deck.CardID2, deck.CardID3); err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
+		if len(*cards) != 3 {
+			return errorResponse(c, http.StatusBadRequest, fmt.Errorf("invalid cards length"))
+		}
+		totalAmountPerSec = (*cards)[0].AmountPerSec + (*cards)[1].AmountPerSec + (*cards)[2].AmountPerSec
 	}
 
 	// 経過時間*生産性のcoin (1椅子 = 1coin)
 	pastTime := requestAt - user.LastGetRewardAt
-	getCoin := int(pastTime) * ((*cards)[0].AmountPerSec + (*cards)[1].AmountPerSec + (*cards)[2].AmountPerSec)
+	getCoin := int(pastTime) * totalAmountPerSec
 
 	// 報酬の保存(ゲームない通貨を保存)(users)
 	user.IsuCoin += int64(getCoin)
 	user.LastGetRewardAt = requestAt
 
-	query = "UPDATE users SET isu_coin=?, last_getreward_at=? WHERE id=?"
+	query := "UPDATE users SET isu_coin=?, last_getreward_at=? WHERE id=?"
 	if _, err = selectDatabase(userID).Exec(query, user.IsuCoin, user.LastGetRewardAt, user.ID); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-
-	if _, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
-		homeCache.Remove(strconv.Itoa(int(userID)))
 	}
 
 	return successResponse(c, &RewardResponse{
@@ -2517,8 +2520,7 @@ func (h *Handler) home(c *fiber.Ctx) error {
 	}
 
 	// 経過時間
-	user := userPool.get()
-	defer userPool.put(user)
+	user := new(User)
 	query = "SELECT * FROM users WHERE id=?"
 	if err = selectDatabase(userID).Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
