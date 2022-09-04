@@ -488,39 +488,46 @@ func getRequestTime(c *fiber.Ctx) (int64, error) {
 }
 
 // loginProcess ログイン処理
-func (h *Handler) loginProcess(tx *sqlx.Tx, userID int64, requestAt int64) (*User, []*UserLoginBonus, []*UserPresent, error) {
+func (h *Handler) loginProcess(userID int64, requestAt int64) (*User, []*UserLoginBonus, []*UserPresent, []func(tx *sqlx.Tx) error, error) {
 	user := new(User)
 
 	// ログインボーナス処理
-	loginBonuses, addIsuCoin, err := h.obtainLoginBonus(tx, userID, requestAt)
+	loginBonuses, addIsuCoin, obtainLoginBonusExecutor, err := h.obtainLoginBonus(userID, requestAt)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// 全員プレゼント取得
-	allPresents, err := h.obtainPresent(tx, userID, requestAt)
+	allPresents, obtainPresentExecutor, err := h.obtainPresent(userID, requestAt)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	query := "SELECT id, isu_coin, last_getreward_at, registered_at, created_at, deleted_at FROM users WHERE id=?"
-	if err := tx.Get(user, query, userID); err != nil {
+	if err := selectDatabase(userID).Get(user, query, userID); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil, nil, ErrUserNotFound
+			return nil, nil, nil, nil, ErrUserNotFound
 		}
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	user.UpdatedAt = requestAt
 	user.LastActivatedAt = requestAt
 	user.IsuCoin += addIsuCoin
 
-	query = "UPDATE users SET updated_at=?, last_activated_at=?, isu_coin=? WHERE id=?"
-	if _, err := tx.Exec(query, requestAt, requestAt, user.IsuCoin, userID); err != nil {
-		return nil, nil, nil, err
+	executors := []func(tx *sqlx.Tx) error{
+		func(tx *sqlx.Tx) error {
+			query = "UPDATE users SET updated_at=?, last_activated_at=?, isu_coin=? WHERE id=?"
+			if _, err := tx.Exec(query, requestAt, requestAt, user.IsuCoin, userID); err != nil {
+				return err
+			}
+			return nil
+		},
+		obtainPresentExecutor,
+		obtainLoginBonusExecutor,
 	}
 
-	return user, loginBonuses, allPresents, nil
+	return user, loginBonuses, allPresents, executors, nil
 }
 
 // firstLoginProcess ユーザー作成時のログイン処理
@@ -543,7 +550,7 @@ func (h *Handler) firstLoginProcess(userID int64, requestAt int64) (*User, []*Us
 	user.LastActivatedAt = requestAt
 	user.IsuCoin += addIsuCoin
 
-	return user, loginBonuses, allPresents, []func(tx *sqlx.Tx) error{loginBonusesExecutor, presentExecutor}, nil
+	return user, loginBonuses, allPresents, []func(tx *sqlx.Tx) error{presentExecutor, loginBonusesExecutor}, nil
 }
 
 // isCompleteTodayLogin ログイン処理が終わっているか
@@ -556,30 +563,27 @@ func isCompleteTodayLogin(lastActivatedAt, requestAt time.Time) bool {
 var zeroUserLoginBonusArr = make([]*UserLoginBonus, 0)
 
 // obtainLoginBonus
-func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserLoginBonus, int64, error) {
+func (h *Handler) obtainLoginBonus(userID int64, requestAt int64) ([]*UserLoginBonus, int64, func(tx *sqlx.Tx) error, error) {
 	// login bonus masterから有効なログインボーナスを取得
 	loginBonuses := loginBonusMasterPool.get()
-	defer loginBonusMasterPool.put(loginBonuses)
 	getLoginBonusMaster(requestAt, loginBonuses)
 	if len(*loginBonuses) == 0 {
-		return zeroUserLoginBonusArr, 0, nil
+		return zeroUserLoginBonusArr, 0, func(tx *sqlx.Tx) error { return nil }, nil
 	}
 
 	// ボーナスの進捗を全取得
 	loginBonusIds := int64ArrPool.get()
-	defer int64ArrPool.put(loginBonusIds)
 	for i := range *loginBonuses {
 		*loginBonusIds = append(*loginBonusIds, (*loginBonuses)[i].ID)
 	}
 	query := "SELECT * FROM user_login_bonuses WHERE user_id=? AND login_bonus_id IN (?)"
 	query, params, err := sqlx.In(query, userID, *loginBonusIds)
 	if err != nil {
-		return nil, 0, errors.WithStack(err)
+		return nil, 0, nil, errors.WithStack(err)
 	}
 	_progress := userLoginBonusArrPool.get()
-	defer userLoginBonusArrPool.put(_progress)
-	if err := tx.Select(_progress, query, params...); err != nil {
-		return nil, 0, errors.WithStack(err)
+	if err := selectDatabase(userID).Select(_progress, query, params...); err != nil {
+		return nil, 0, nil, errors.WithStack(err)
 	}
 	progress := make(map[int64]*UserLoginBonus, len(*_progress))
 	//for _, bonus := range _progress {
@@ -588,12 +592,9 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 	}
 
 	initBonuses := userLoginBonusArrPool.get()
-	defer userLoginBonusArrPool.put(initBonuses)
 	progressBonuses := userLoginBonusArrPool.get()
-	defer userLoginBonusArrPool.put(progressBonuses)
 	sendLoginBonuses := make([]*UserLoginBonus, 0)
 	rewards := loginBonusRewardMasterArrPool.get()
-	defer loginBonusRewardMasterArrPool.put(rewards)
 
 	//for _, bonus := range loginBonuses {
 	for i := 0; i < len((*loginBonuses)); i++ {
@@ -601,7 +602,7 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		if userBonus == nil {
 			ubID, err := h.generateID()
 			if err != nil {
-				return nil, 0, errors.WithStack(err)
+				return nil, 0, nil, errors.WithStack(err)
 			}
 			userBonus = &UserLoginBonus{ // ボーナス初期化
 				ID:                 ubID,
@@ -634,32 +635,17 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 		// 今回付与するリソース取得
 		ok, rewardItem := getLoginBonusRewardMasterByIDAndSequence((*loginBonuses)[i].ID, userBonus.LastRewardSequence)
 		if !ok {
-			return nil, 0, ErrLoginBonusRewardNotFound
+			return nil, 0, nil, ErrLoginBonusRewardNotFound
 		}
 		*rewards = append(*rewards, &rewardItem)
 	}
 
-	if len(*initBonuses) > 0 {
-		query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (:id, :user_id, :login_bonus_id, :last_reward_sequence, :loop_count, :created_at, :updated_at)"
-		if _, err = tx.NamedExec(query, *initBonuses); err != nil {
-			return nil, 0, errors.WithStack(err)
-		}
-	}
-	if len(*progressBonuses) > 0 {
-		query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
-		//for _, userBonus := range progressBonuses {
-		for i := 0; i < len(*progressBonuses); i++ {
-			if _, err = tx.Exec(query, (*progressBonuses)[i].LastRewardSequence, (*progressBonuses)[i].LoopCount, (*progressBonuses)[i].UpdatedAt, (*progressBonuses)[i].ID); err != nil {
-				return nil, 0, errors.WithStack(err)
-			}
-		}
-	}
 	coinAmount := int64(0)
+	var (
+		cardIDs []int64
+		item45s []obtain45Item
+	)
 	if len(*rewards) > 0 {
-		var (
-			cardIDs []int64
-			item45s []obtain45Item
-		)
 		for i := range *rewards {
 			switch (*rewards)[i].ItemType {
 			case 1: // coin
@@ -673,19 +659,42 @@ func (h *Handler) obtainLoginBonus(tx *sqlx.Tx, userID int64, requestAt int64) (
 				})
 			}
 		}
-
-		//if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
-		//	return nil, errors.WithStack(err)
-		//}
-		if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
-			return nil, 0, errors.WithStack(err)
-		}
-		if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
-			return nil, 0, errors.WithStack(err)
-		}
 	}
 
-	return sendLoginBonuses, coinAmount, nil
+	f := func(tx *sqlx.Tx) error {
+		defer loginBonusMasterPool.put(loginBonuses)
+		defer int64ArrPool.put(loginBonusIds)
+		defer userLoginBonusArrPool.put(_progress)
+		defer userLoginBonusArrPool.put(initBonuses)
+		defer userLoginBonusArrPool.put(progressBonuses)
+		defer loginBonusRewardMasterArrPool.put(rewards)
+		if len(*initBonuses) > 0 {
+			query = "INSERT INTO user_login_bonuses(id, user_id, login_bonus_id, last_reward_sequence, loop_count, created_at, updated_at) VALUES (:id, :user_id, :login_bonus_id, :last_reward_sequence, :loop_count, :created_at, :updated_at)"
+			if _, err = tx.NamedExec(query, *initBonuses); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+		if len(*progressBonuses) > 0 {
+			query = "UPDATE user_login_bonuses SET last_reward_sequence=?, loop_count=?, updated_at=? WHERE id=?"
+			for i := 0; i < len(*progressBonuses); i++ {
+				if _, err = tx.Exec(query, (*progressBonuses)[i].LastRewardSequence, (*progressBonuses)[i].LoopCount, (*progressBonuses)[i].UpdatedAt, (*progressBonuses)[i].ID); err != nil {
+					return errors.WithStack(err)
+				}
+			}
+		}
+
+		if len(*rewards) > 0 {
+			if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
+				return errors.WithStack(err)
+			}
+			if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+		return nil
+	}
+
+	return sendLoginBonuses, coinAmount, f, nil
 }
 
 // obtainLoginBonus
@@ -786,12 +795,11 @@ func (h *Handler) obtainLoginBonusForFirstLogin(userID int64, requestAt int64) (
 var zeroUserPresentArr = make([]*UserPresent, 0)
 
 // obtainPresent プレゼント付与処理
-func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*UserPresent, error) {
+func (h *Handler) obtainPresent(userID int64, requestAt int64) ([]*UserPresent, func(tx *sqlx.Tx) error, error) {
 	normalPresents := presentAllMasterPool.get()
-	defer presentAllMasterPool.put(normalPresents)
 	getPresentAllMaster(requestAt, normalPresents)
 	if len(*normalPresents) == 0 {
-		return zeroUserPresentArr, nil
+		return zeroUserPresentArr, func(tx *sqlx.Tx) error { return nil }, nil
 	}
 
 	// 全員プレゼント取得情報更新
@@ -801,13 +809,12 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	}
 
 	received := userPresentAllReceivedHistoryArrPool.get()
-	defer userPresentAllReceivedHistoryArrPool.put(received)
 	q, params, err := sqlx.In("SELECT present_all_id FROM user_present_all_received_history WHERE user_id=? AND present_all_id IN (?)", userID, ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := tx.Select(received, q, params...); err != nil {
-		return nil, err
+	if err := selectDatabase(userID).Select(received, q, params...); err != nil {
+		return nil, nil, err
 	}
 	receivedIds := make(map[int64]bool, len(*received))
 	for i := range *received {
@@ -816,7 +823,6 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 
 	obtainPresents := make([]*UserPresent, 0)
 	history := userPresentAllReceivedHistoryArrPool.get()
-	defer userPresentAllReceivedHistoryArrPool.put(history)
 	//for _, np := range normalPresents {
 	for i := 0; i < len(*normalPresents); i++ {
 		if receivedIds[(*normalPresents)[i].ID] {
@@ -827,11 +833,11 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 		// historyに入れる
 		pID, err := h.generateID()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		phID, err := h.generateID()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		up := &UserPresent{
 			ID:             pID,
@@ -857,25 +863,33 @@ func (h *Handler) obtainPresent(tx *sqlx.Tx, userID int64, requestAt int64) ([]*
 	}
 
 	if len(obtainPresents) == 0 {
-		return obtainPresents, nil
+		return obtainPresents, func(tx *sqlx.Tx) error {
+			return nil
+		}, nil
 	}
 
-	_, err = tx.NamedExec(
-		"INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)",
-		obtainPresents,
-	)
-	if err != nil {
-		return nil, err
-	}
-	_, err = tx.NamedExec(
-		"INSERT INTO user_present_all_received_history(id, user_id, present_all_id, received_at, created_at, updated_at) VALUES (:id, :user_id, :present_all_id, :received_at, :created_at, :updated_at)",
-		*history,
-	)
-	if err != nil {
-		return nil, err
+	f := func(tx *sqlx.Tx) error {
+		defer presentAllMasterPool.put(normalPresents)
+		defer userPresentAllReceivedHistoryArrPool.put(received)
+		defer userPresentAllReceivedHistoryArrPool.put(history)
+		_, err = tx.NamedExec(
+			"INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)",
+			obtainPresents,
+		)
+		if err != nil {
+			return err
+		}
+		_, err = tx.NamedExec(
+			"INSERT INTO user_present_all_received_history(id, user_id, present_all_id, received_at, created_at, updated_at) VALUES (:id, :user_id, :present_all_id, :received_at, :created_at, :updated_at)",
+			*history,
+		)
+		if err != nil {
+			return err
+		}
+		return nil
 	}
 
-	return obtainPresents, nil
+	return obtainPresents, f, nil
 }
 
 // obtainPresent プレゼント付与処理
@@ -1322,6 +1336,13 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 			return // errorResponse(c, http.StatusInternalServerError, err)
 		}
 
+		for _, q := range queryExecuters {
+			if err := q(tx); err != nil {
+				log.Printf("failed to execute query: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+		}
+
 		query = "INSERT INTO user_devices(id, user_id, platform_id, platform_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
 		_, err = tx.Exec(query, userDevice.ID, user.ID, req.ViewerID, req.PlatformType, requestAt, requestAt)
 		if err != nil {
@@ -1339,13 +1360,6 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		if _, err := tx.Exec(query, initDeck.ID, initDeck.UserID, initDeck.CardID1, initDeck.CardID2, initDeck.CardID3, initDeck.CreatedAt, initDeck.UpdatedAt); err != nil {
 			log.Printf("failed to insert user_deck: %v", err)
 			return // errorResponse(c, http.StatusInternalServerError, err)
-		}
-
-		for _, q := range queryExecuters {
-			if err := q(tx); err != nil {
-				log.Printf("failed to execute query: %v", err)
-				return // errorResponse(c, http.StatusInternalServerError, err)
-			}
 		}
 
 		err = tx.Commit()
@@ -1397,8 +1411,7 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
 
-	user := userPool.get()
-	defer userPool.put(user)
+	user := new(User)
 	query := "SELECT * FROM users WHERE id=?"
 	if err := selectDatabase(req.UserID).Get(user, query, req.UserID); err != nil {
 		if err == sql.ErrNoRows {
@@ -1423,12 +1436,6 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		}
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-
-	tx, err := selectDatabase(req.UserID).Beginx()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	defer tx.Rollback() //nolint:errcheck
 
 	// sessionを更新
 	//query = "UPDATE user_sessions SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
@@ -1462,16 +1469,54 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	if isCompleteTodayLogin(time.Unix(user.LastActivatedAt, 0), time.Unix(requestAt, 0)) {
 		user.UpdatedAt = requestAt
 		user.LastActivatedAt = requestAt
-
-		query = "UPDATE users SET updated_at=?, last_activated_at=? WHERE id=?"
-		if _, err := tx.Exec(query, requestAt, requestAt, req.UserID); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+		var lock *sync.Mutex
+		var ok bool
+		if lock, ok = userOpsLock.Get(strconv.Itoa(int(req.UserID))); !ok {
+			lock = &sync.Mutex{}
+			userOpsLock.Set(strconv.Itoa(int(req.UserID)), lock)
 		}
 
-		err = tx.Commit()
-		if err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+		lock.Lock()
+		go func() {
+			defer lock.Unlock()
+			query = "UPDATE users SET updated_at=?, last_activated_at=? WHERE id=?"
+			if _, err := selectDatabase(user.ID).Exec(query, requestAt, requestAt, req.UserID); err != nil {
+				log.Printf("failed to update user: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+		}()
+
+		deck := new(UserDeck)
+		query := "SELECT * FROM user_decks WHERE user_id=? AND deleted_at IS NULL"
+		if err = selectDatabase(user.ID).Get(deck, query, user.ID); err != nil {
+			if err != sql.ErrNoRows {
+				return errorResponse(c, http.StatusInternalServerError, err)
+			}
+			deck = nil
 		}
+
+		// 生産性
+		cards := userCardArrPool.get()
+		defer userCardArrPool.put(cards)
+		if deck != nil {
+			cardIds := []int64{deck.CardID1, deck.CardID2, deck.CardID3}
+			query, params, err := sqlx.In("SELECT * FROM user_cards WHERE id IN (?)", cardIds)
+			if err != nil {
+				return errorResponse(c, http.StatusInternalServerError, err)
+			}
+			if err = selectDatabase(user.ID).Select(cards, query, params...); err != nil {
+				return errorResponse(c, http.StatusInternalServerError, err)
+			}
+		}
+		totalAmountPerSec := 0
+		for _, v := range *cards {
+			totalAmountPerSec += v.AmountPerSec
+		}
+		homeCache.Set(strconv.Itoa(int(user.ID)), &HomeResponse{
+			User:              user,
+			Deck:              deck,
+			TotalAmountPerSec: totalAmountPerSec,
+		})
 
 		return successResponse(c, &LoginResponse{
 			ViewerID:         req.ViewerID,
@@ -1480,8 +1525,17 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		})
 	}
 
+	var lock *sync.Mutex
+	var ok bool
+	if lock, ok = userOpsLock.Get(strconv.Itoa(int(req.UserID))); !ok {
+		lock = &sync.Mutex{}
+		userOpsLock.Set(strconv.Itoa(int(req.UserID)), lock)
+	}
+
+	lock.Lock()
+
 	// login process
-	user2, loginBonuses, presents, err := h.loginProcess(tx, req.UserID, requestAt)
+	user2, loginBonuses, presents, executors, err := h.loginProcess(req.UserID, requestAt)
 	if err != nil {
 		if err == ErrUserNotFound || err == ErrItemNotFound || err == ErrLoginBonusRewardNotFound {
 			return errorResponse(c, http.StatusNotFound, err)
@@ -1492,14 +1546,61 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+	go func() {
+		defer lock.Unlock()
+
+		tx, err := selectDatabase(req.UserID).Beginx()
+		if err != nil {
+			log.Printf("failed to begin transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+		defer tx.Rollback() //nolint:errcheck
+
+		for _, q := range executors {
+			if err := q(tx); err != nil {
+				log.Printf("failed to execute query: %v", err)
+				return
+			}
+		}
+
+		err = tx.Commit()
+		if err != nil {
+			log.Printf("failed to commit transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+	}()
+
+	deck := new(UserDeck)
+	query = "SELECT * FROM user_decks WHERE user_id=? AND deleted_at IS NULL"
+	if err = selectDatabase(user.ID).Get(deck, query, user.ID); err != nil {
+		if err != sql.ErrNoRows {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
+		deck = nil
 	}
 
-	if _, ok := homeCache.Get(strconv.Itoa(int(user.ID))); ok {
-		homeCache.Remove(strconv.Itoa(int(user.ID)))
+	// 生産性
+	cards := userCardArrPool.get()
+	defer userCardArrPool.put(cards)
+	if deck != nil {
+		cardIds := []int64{deck.CardID1, deck.CardID2, deck.CardID3}
+		query, params, err := sqlx.In("SELECT * FROM user_cards WHERE id IN (?)", cardIds)
+		if err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
+		if err = selectDatabase(user.ID).Select(cards, query, params...); err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
 	}
+	totalAmountPerSec := 0
+	for _, v := range *cards {
+		totalAmountPerSec += v.AmountPerSec
+	}
+	homeCache.Set(strconv.Itoa(int(user.ID)), &HomeResponse{
+		User:              user2,
+		Deck:              deck,
+		TotalAmountPerSec: totalAmountPerSec,
+	})
 
 	return successResponse(c, &LoginResponse{
 		ViewerID:         req.ViewerID,
