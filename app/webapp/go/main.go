@@ -257,7 +257,7 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 	c.Context().SetUserValue("userID", userID)
 
 	if lock, ok := userOpsLock.Get(strconv.Itoa(int(userID))); ok {
-		if ok := homeCache.Has(strconv.Itoa(int(userID))); (strings.HasSuffix(c.Path(), "/home") && ok) || strings.HasSuffix(c.Path(), "/gacha/index") {
+		if ok := homeCache.Has(strconv.Itoa(int(userID))); (strings.HasSuffix(c.Path(), "/home") && ok) || strings.HasSuffix(c.Path(), "/gacha/index") || (strings.Contains(c.Path(), "/gacha/draw/") && ok) {
 
 		} else {
 			lock.Lock()
@@ -1755,18 +1755,25 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 	consumedCoin := int64(gachaCount * 1000)
 
 	// userのisuconが足りるか
-	user := userPool.get()
-	defer userPool.put(user)
-	query := "SELECT * FROM users WHERE id=?"
-	if err := selectDatabase(userID).Get(user, query, userID); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusNotFound, ErrUserNotFound)
+	var user *User
+	if homeRes, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		user = homeRes.User
+	} else {
+		user = userPool.get()
+		defer userPool.put(user)
+		query := "SELECT * FROM users WHERE id=?"
+		if err := selectDatabase(userID).Get(user, query, userID); err != nil {
+			if err == sql.ErrNoRows {
+				return errorResponse(c, http.StatusNotFound, ErrUserNotFound)
+			}
+			return errorResponse(c, http.StatusInternalServerError, err)
 		}
-		return errorResponse(c, http.StatusInternalServerError, err)
 	}
+
 	if user.IsuCoin < consumedCoin {
 		return errorResponse(c, http.StatusConflict, fmt.Errorf("not enough isucon"))
 	}
+	user.IsuCoin -= consumedCoin
 
 	// gachaIDからガチャマスタの取得
 	gachaIDint64, err := strconv.ParseInt(gachaID, 10, 64)
@@ -1844,7 +1851,7 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 
 		// 直付与 => プレゼントに入れる
 
-		query = "INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)"
+		query := "INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)"
 		if _, err := tx.NamedExec(query, *presents); err != nil {
 			log.Printf("failed to insert user_presents: %v", err)
 			return // errorResponse(c, http.StatusInternalServerError, err)
@@ -1852,8 +1859,7 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 
 		// isuconをへらす
 		query = "UPDATE users SET isu_coin=? WHERE id=?"
-		totalCoin := user.IsuCoin - consumedCoin
-		if _, err := tx.Exec(query, totalCoin, user.ID); err != nil {
+		if _, err := tx.Exec(query, user.IsuCoin, user.ID); err != nil {
 			log.Printf("failed to update users: %v", err)
 			return // errorResponse(c, http.StatusInternalServerError, err)
 		}
@@ -1989,8 +1995,8 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		}
 	}
 
-	if _, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
-		homeCache.Remove(strconv.Itoa(int(userID)))
+	if homeRes, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		homeRes.User.IsuCoin += coinAmount
 	}
 
 	var lock *sync.Mutex
