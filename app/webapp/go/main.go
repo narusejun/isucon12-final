@@ -1549,6 +1549,7 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	// login process
 	user2, loginBonuses, presents, executors, err := h.loginProcess(req.UserID, requestAt)
 	if err != nil {
+		defer lock.Unlock()
 		if err == ErrUserNotFound || err == ErrItemNotFound || err == ErrLoginBonusRewardNotFound {
 			return errorResponse(c, http.StatusNotFound, err)
 		}
@@ -2266,23 +2267,20 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	// get target card
-	card := targetUserCardDataPool.get()
-	defer targetUserCardDataPool.put(card)
-	query := `
-	SELECT uc.id , uc.user_id , uc.card_id , uc.amount_per_sec , uc.level, uc.total_exp, im.amount_per_sec as 'base_amount_per_sec', im.max_level , im.max_amount_per_sec , im.base_exp_per_level
-	FROM user_cards as uc
-	INNER JOIN item_masters as im ON uc.card_id = im.id
-	WHERE uc.id = ? AND uc.user_id=?
-	`
-	if err = selectDatabase(userID).Get(card, query, cardID, userID); err != nil {
+	card := new(UserCard)
+	query := `SELECT * FROM user_cards WHERE id = ?`
+	if err = selectDatabase(userID).Get(card, query, cardID); err != nil {
 		if err == sql.ErrNoRows {
 			return errorResponse(c, http.StatusNotFound, err)
 		}
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
+	ok, masterCard := getItemMasterByID(card.CardID)
+	if !ok {
+		return errorResponse(c, http.StatusNotFound, err)
+	}
 
-	if card.Level == card.MaxLevel {
+	if card.Level == *masterCard.MaxLevel {
 		return errorResponse(c, http.StatusBadRequest, fmt.Errorf("target card is max level"))
 	}
 
@@ -2292,11 +2290,10 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	SELECT ui.id, ui.user_id, ui.item_id, ui.item_type, ui.amount, ui.created_at, ui.updated_at, im.gained_exp
 	FROM user_items as ui
 	INNER JOIN item_masters as im ON ui.item_id = im.id
-	WHERE ui.item_type = 3 AND ui.id=? AND ui.user_id=?
+	WHERE ui.id=? AND ui.user_id=?
 	`
 	for _, v := range req.Items {
-		item := consumeUserItemDataPool.get()
-		defer consumeUserItemDataPool.put(item)
+		item := new(ConsumeUserItemData)
 		if err = selectDatabase(userID).Get(item, query, v.ID, userID); err != nil {
 			if err == sql.ErrNoRows {
 				return errorResponse(c, http.StatusNotFound, err)
@@ -2314,65 +2311,74 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 	// 経験値付与
 	// 経験値をカードに付与
 	for _, v := range items {
-		card.TotalExp += v.GainedExp * v.ConsumeAmount
+		card.TotalExp += int64(v.GainedExp * v.ConsumeAmount)
 	}
 
 	// lvup判定(lv upしたら生産性を加算)
 	for {
-		nextLvThreshold := int(float64(card.BaseExpPerLevel) * math.Pow(1.2, float64(card.Level-1)))
+		nextLvThreshold := int64(float64(*masterCard.BaseExpPerLevel) * math.Pow(1.2, float64(card.Level-1)))
 		if nextLvThreshold > card.TotalExp {
 			break
 		}
 
 		// lv up処理
 		card.Level += 1
-		card.AmountPerSec += (card.MaxAmountPerSec - card.BaseAmountPerSec) / (card.MaxLevel - 1)
+		card.AmountPerSec += (*masterCard.MaxAmountPerSec - *masterCard.AmountPerSec) / (*masterCard.MaxLevel - 1)
+	}
 
-		// homeCache の更新
-		if homeRes, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
-			if homeRes.Deck.CardID1 == cardID {
-				homeRes.CardID1aps = card.AmountPerSec
-			}
-			if homeRes.Deck.CardID2 == cardID {
-				homeRes.CardID2aps = card.AmountPerSec
-			}
-			if homeRes.Deck.CardID3 == cardID {
-				homeRes.CardID3aps = card.AmountPerSec
-			}
-			homeRes.TotalAmountPerSec = homeRes.CardID1aps + homeRes.CardID2aps + homeRes.CardID3aps
+	// homeCache の更新
+	if homeRes, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		if homeRes.Deck.CardID1 == cardID {
+			homeRes.CardID1aps = card.AmountPerSec
 		}
-	}
-
-	tx, err := selectDatabase(userID).Beginx()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-
-	defer tx.Rollback() //nolint:errcheck
-
-	// cardのlvと経験値の更新、itemの消費
-	query = "UPDATE user_cards SET amount_per_sec=?, level=?, total_exp=?, updated_at=? WHERE id=?"
-	if _, err = tx.Exec(query, card.AmountPerSec, card.Level, card.TotalExp, requestAt, card.ID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-
-	query = "UPDATE user_items SET amount=?, updated_at=? WHERE id=?"
-	for _, v := range items {
-		if _, err = tx.Exec(query, v.Amount-v.ConsumeAmount, requestAt, v.ID); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+		if homeRes.Deck.CardID2 == cardID {
+			homeRes.CardID2aps = card.AmountPerSec
 		}
+		if homeRes.Deck.CardID3 == cardID {
+			homeRes.CardID3aps = card.AmountPerSec
+		}
+		homeRes.TotalAmountPerSec = homeRes.CardID1aps + homeRes.CardID2aps + homeRes.CardID3aps
 	}
 
-	// get response data
-	resultCard := userCardPool.get()
-	defer userCardPool.put(resultCard)
-	query = "SELECT * FROM user_cards WHERE id=?"
-	if err = tx.Get(resultCard, query, card.ID); err != nil {
-		if err == sql.ErrNoRows {
-			return errorResponse(c, http.StatusNotFound, fmt.Errorf("not found card"))
-		}
-		return errorResponse(c, http.StatusInternalServerError, err)
+	var lock *sync.Mutex
+	if lock, ok = userOpsLock.Get(strconv.Itoa(int(userID))); !ok {
+		lock = &sync.Mutex{}
+		userOpsLock.Set(strconv.Itoa(int(userID)), lock)
 	}
+
+	go func() {
+		lock.Lock()
+		defer lock.Unlock()
+		tx, err := selectDatabase(userID).Beginx()
+		if err != nil {
+			log.Printf("failed to begin transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+
+		defer tx.Rollback() //nolint:errcheck
+
+		// cardのlvと経験値の更新、itemの消費
+		query = "UPDATE user_cards SET amount_per_sec=?, level=?, total_exp=?, updated_at=? WHERE id=?"
+		if _, err = tx.Exec(query, card.AmountPerSec, card.Level, card.TotalExp, requestAt, card.ID); err != nil {
+			log.Printf("failed to update user_cards: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+
+		query = "UPDATE user_items SET amount=?, updated_at=? WHERE id=?"
+		for _, v := range items {
+			if _, err = tx.Exec(query, v.Amount-v.ConsumeAmount, requestAt, v.ID); err != nil {
+				log.Printf("failed to update user_items: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+		}
+
+		err = tx.Commit()
+		if err != nil {
+			log.Printf("failed to commit transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+	}()
+
 	resultItems := userItemsArrPool.get()
 	defer userItemsArrPool.put(resultItems)
 	for _, v := range items {
@@ -2387,13 +2393,8 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 		})
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-
 	return successResponse(c, &AddExpToCardResponse{
-		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, []*UserCard{resultCard}, nil, *resultItems, nil, nil),
+		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, []*UserCard{card}, nil, *resultItems, nil, nil),
 	})
 }
 
@@ -2441,6 +2442,10 @@ type TargetUserCardData struct {
 	MaxAmountPerSec int `db:"max_amount_per_sec"`
 	// lv1 -> lv2に上がるときのexp
 	BaseExpPerLevel int `db:"base_exp_per_level"`
+
+	CreatedAt int64  `db:"created_at"`
+	UpdatedAt int64  `db:"updated_at"`
+	DeletedAt *int64 `db:"deleted_at"`
 }
 
 // updateDeck 装備変更
