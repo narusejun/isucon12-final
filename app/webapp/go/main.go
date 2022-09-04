@@ -257,7 +257,7 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 	c.Context().SetUserValue("userID", userID)
 
 	if lock, ok := userOpsLock.Get(strconv.Itoa(int(userID))); ok {
-		if ok := homeCache.Has(strconv.Itoa(int(userID))); strings.HasSuffix(c.Path(), "/home") && ok {
+		if ok := homeCache.Has(strconv.Itoa(int(userID))); (strings.HasSuffix(c.Path(), "/home") && ok) || strings.HasSuffix(c.Path(), "/gacha/index") {
 
 		} else {
 			lock.Lock()
