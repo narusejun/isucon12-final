@@ -1377,6 +1377,9 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		User:              user,
 		Deck:              initDeck,
 		TotalAmountPerSec: totalAmountPerSec,
+		CardID1aps:        initCards[0].AmountPerSec,
+		CardID2aps:        initCards[1].AmountPerSec,
+		CardID3aps:        initCards[2].AmountPerSec,
 	})
 
 	return successResponse(c, &CreateUserResponse{
@@ -1520,6 +1523,9 @@ func (h *Handler) login(c *fiber.Ctx) error {
 			User:              user,
 			Deck:              deck,
 			TotalAmountPerSec: totalAmountPerSec,
+			CardID1aps:        (*cards)[0].AmountPerSec,
+			CardID2aps:        (*cards)[1].AmountPerSec,
+			CardID3aps:        (*cards)[2].AmountPerSec,
 		})
 
 		return successResponse(c, &LoginResponse{
@@ -1606,6 +1612,9 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		User:              user2,
 		Deck:              deck,
 		TotalAmountPerSec: totalAmountPerSec,
+		CardID1aps:        (*cards)[0].AmountPerSec,
+		CardID2aps:        (*cards)[1].AmountPerSec,
+		CardID3aps:        (*cards)[2].AmountPerSec,
 	})
 
 	return successResponse(c, &LoginResponse{
@@ -2318,6 +2327,20 @@ func (h *Handler) addExpToCard(c *fiber.Ctx) error {
 		// lv up処理
 		card.Level += 1
 		card.AmountPerSec += (card.MaxAmountPerSec - card.BaseAmountPerSec) / (card.MaxLevel - 1)
+
+		// homeCache の更新
+		if homeRes, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+			if homeRes.Deck.CardID1 == cardID {
+				homeRes.CardID1aps = card.AmountPerSec
+			}
+			if homeRes.Deck.CardID2 == cardID {
+				homeRes.CardID2aps = card.AmountPerSec
+			}
+			if homeRes.Deck.CardID3 == cardID {
+				homeRes.CardID3aps = card.AmountPerSec
+			}
+			homeRes.TotalAmountPerSec = homeRes.CardID1aps + homeRes.CardID2aps + homeRes.CardID3aps
+		}
 	}
 
 	tx, err := selectDatabase(userID).Beginx()
@@ -2685,6 +2708,9 @@ func (h *Handler) home(c *fiber.Ctx) error {
 		Deck:              deck,
 		TotalAmountPerSec: totalAmountPerSec,
 		PastTime:          pastTime,
+		CardID1aps:        (*cards)[0].AmountPerSec,
+		CardID2aps:        (*cards)[1].AmountPerSec,
+		CardID3aps:        (*cards)[2].AmountPerSec,
 	}
 	homeCache.Set(strconv.Itoa(int(userID)), res)
 
@@ -2697,6 +2723,9 @@ type HomeResponse struct {
 	Deck              *UserDeck `json:"deck,omitempty"`
 	TotalAmountPerSec int       `json:"totalAmountPerSec"`
 	PastTime          int64     `json:"pastTime"` // 経過時間を秒単位で
+	CardID1aps        int       `json:"-"`
+	CardID2aps        int       `json:"-"`
+	CardID3aps        int       `json:"-"`
 }
 
 // //////////////////////////////////////
