@@ -1683,7 +1683,6 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 
 	// random値の導出 & 抽選
 	result := gachaItemMasterPool.get()
-	defer gachaItemMasterPool.put(result)
 	for i := 0; i < int(gachaCount); i++ {
 		random := prand.Int63n(sum)
 		boundary := 0
@@ -1695,16 +1694,7 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 			}
 		}
 	}
-
-	tx, err := selectDatabase(userID).Beginx()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	// 直付与 => プレゼントに入れる
 	presents := userPresentArrPool.get()
-	defer userPresentArrPool.put(presents)
 	for _, v := range *result {
 		pID, err := h.generateID()
 		if err != nil {
@@ -1724,22 +1714,46 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 		*presents = append(*presents, present)
 	}
 
-	query = "INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)"
-	if _, err := tx.NamedExec(query, *presents); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+	var lock *sync.Mutex
+	if lock, ok = userOpsLock.Get(strconv.Itoa(int(userID))); !ok {
+		lock = &sync.Mutex{}
+		userOpsLock.Set(strconv.Itoa(int(userID)), lock)
 	}
+	lock.Lock()
 
-	// isuconをへらす
-	query = "UPDATE users SET isu_coin=? WHERE id=?"
-	totalCoin := user.IsuCoin - consumedCoin
-	if _, err := tx.Exec(query, totalCoin, user.ID); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	go func() {
+		defer lock.Unlock()
+		defer gachaItemMasterPool.put(result)
+		defer userPresentArrPool.put(presents)
+		tx, err := selectDatabase(userID).Beginx()
+		if err != nil {
+			log.Printf("failed to begin transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+		defer tx.Rollback() //nolint:errcheck
 
-	err = tx.Commit()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+		// 直付与 => プレゼントに入れる
+
+		query = "INSERT INTO user_presents(id, user_id, sent_at, item_type, item_id, amount, present_message, created_at, updated_at) VALUES (:id, :user_id, :sent_at, :item_type, :item_id, :amount, :present_message, :created_at, :updated_at)"
+		if _, err := tx.NamedExec(query, *presents); err != nil {
+			log.Printf("failed to insert user_presents: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+
+		// isuconをへらす
+		query = "UPDATE users SET isu_coin=? WHERE id=?"
+		totalCoin := user.IsuCoin - consumedCoin
+		if _, err := tx.Exec(query, totalCoin, user.ID); err != nil {
+			log.Printf("failed to update users: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+
+		err = tx.Commit()
+		if err != nil {
+			log.Printf("failed to commit transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
+		}
+	}()
 
 	return successResponse(c, &DrawGachaResponse{
 		Presents: *presents,
