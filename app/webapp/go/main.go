@@ -1322,9 +1322,9 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 	userSession.Set(strconv.Itoa(int(user.ID)), sessions)
 
 	lock := &sync.Mutex{}
-	lock.Lock()
 	userOpsLock.Set(strconv.Itoa(int(user.ID)), lock)
 	go func() {
+		lock.Lock()
 		defer lock.Unlock()
 		tx, err := selectDatabase(uID).Beginx()
 		if err != nil {
@@ -1480,8 +1480,8 @@ func (h *Handler) login(c *fiber.Ctx) error {
 			userOpsLock.Set(strconv.Itoa(int(req.UserID)), lock)
 		}
 
-		lock.Lock()
 		go func() {
+			lock.Lock()
 			defer lock.Unlock()
 			query = "UPDATE users SET updated_at=?, last_activated_at=? WHERE id=?"
 			if _, err := selectDatabase(user.ID).Exec(query, requestAt, requestAt, req.UserID); err != nil {
@@ -1844,9 +1844,9 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 		lock = &sync.Mutex{}
 		userOpsLock.Set(strconv.Itoa(int(userID)), lock)
 	}
-	lock.Lock()
 
 	go func() {
+		lock.Lock()
 		defer lock.Unlock()
 		defer gachaItemMasterPool.put(result)
 		defer userPresentArrPool.put(presents)
@@ -2046,8 +2046,9 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		lock = &sync.Mutex{}
 		userOpsLock.Set(strconv.Itoa(int(userID)), lock)
 	}
-	lock.Lock()
+
 	go func() {
+		lock.Lock()
 		defer lock.Unlock()
 		defer receivePresentRequestPool.put(req)
 		defer userPresentArrPool.put(obtainPresent)
