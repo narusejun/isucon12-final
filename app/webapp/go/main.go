@@ -93,22 +93,31 @@ func main() {
 	if buf, err := os.ReadFile("user_one_time_tokens_type1.json"); err != nil {
 		log.Printf("failed to read file: %v", err)
 	} else {
-		if err := json.Unmarshal(buf, &oneTimeTokenType1); err != nil {
+		var oneTimeTokenType1Map map[string][]*UserOneTimeToken
+		if err := json.Unmarshal(buf, &oneTimeTokenType1Map); err != nil {
 			log.Printf("failed to unmarshal: %v", err)
+		} else {
+			oneTimeTokenType1.MSet(oneTimeTokenType1Map)
 		}
 	}
 	if buf, err := os.ReadFile("user_one_time_tokens_type2.json"); err != nil {
 		log.Printf("failed to read file: %v", err)
 	} else {
-		if err := json.Unmarshal(buf, &oneTimeTokenType2); err != nil {
+		var oneTimeTokenType2Map map[string][]*UserOneTimeToken
+		if err := json.Unmarshal(buf, &oneTimeTokenType2Map); err != nil {
 			log.Printf("failed to unmarshal: %v", err)
+		} else {
+			oneTimeTokenType2.MSet(oneTimeTokenType2Map)
 		}
 	}
 	if buf, err := os.ReadFile("user_session.json"); err != nil {
 		log.Printf("failed to read file: %v", err)
 	} else {
-		if err := json.Unmarshal(buf, &userSession); err != nil {
+		var userSessionMap map[string][]*Session
+		if err := json.Unmarshal(buf, &userSessionMap); err != nil {
 			log.Printf("failed to unmarshal: %v", err)
+		} else {
+			userSession.MSet(userSessionMap)
 		}
 	}
 
@@ -195,7 +204,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	buf, err := json.Marshal(oneTimeTokenType1)
+	buf, err := json.Marshal(oneTimeTokenType1.Items())
 	if err != nil {
 		log.Printf("failed to marshal: %v", err)
 	}
@@ -204,7 +213,7 @@ func main() {
 	} else {
 		log.Print("write user_one_time_tokens_type1.json")
 	}
-	buf, err = json.Marshal(oneTimeTokenType2)
+	buf, err = json.Marshal(oneTimeTokenType2.Items())
 	if err != nil {
 		log.Printf("failed to marshal: %v", err)
 	}
@@ -213,7 +222,7 @@ func main() {
 	} else {
 		log.Print("write user_one_time_tokens_type2.json")
 	}
-	buf, err = json.Marshal(userSession)
+	buf, err = json.Marshal(userSession.Items())
 	if err != nil {
 		log.Printf("failed to marshal: %v", err)
 	}
