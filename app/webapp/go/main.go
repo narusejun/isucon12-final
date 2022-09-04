@@ -1797,7 +1797,6 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
 	obtainPresent := userPresentArrPool.get()
-	defer userPresentArrPool.put(obtainPresent)
 	if err = selectDatabase(userID).Select(obtainPresent, query, params...); err != nil {
 		return errorResponse(c, http.StatusBadRequest, err)
 	}
@@ -1807,12 +1806,6 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 			UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, zeroUserPresentArr),
 		})
 	}
-
-	tx, err := selectDatabase(userID).Beginx()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
-	defer tx.Rollback() //nolint:errcheck
 
 	// 配布処理
 	var (
@@ -1838,49 +1831,75 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		}
 	}
 
-	if len(presentIDs) > 0 {
-		q := "UPDATE user_presents SET deleted_at=?, updated_at=? WHERE id IN (?)"
-		q, params, err = sqlx.In(q, requestAt, requestAt, presentIDs)
+	initializingUserMap[userID] = &sync.Mutex{}
+	initializingUserMap[userID].Lock()
+	go func() {
+		defer initializingUserMap[userID].Unlock()
+		defer delete(initializingUserMap, userID)
+		defer userPresentArrPool.put(obtainPresent)
+		tx, err := selectDatabase(userID).Beginx()
 		if err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+			log.Printf("failed to begin transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
 		}
-		if _, err := tx.Exec(q, params...); err != nil {
-			return errorResponse(c, http.StatusInternalServerError, err)
+		defer tx.Rollback() //nolint:errcheck
+
+		if len(presentIDs) > 0 {
+			q := "UPDATE user_presents SET deleted_at=?, updated_at=? WHERE id IN (?)"
+			q, params, err = sqlx.In(q, requestAt, requestAt, presentIDs)
+			if err != nil {
+				log.Printf("failed to build query: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+			if _, err := tx.Exec(q, params...); err != nil {
+				log.Printf("failed to update user_presents: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+
+			if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
+				if err == ErrUserNotFound || err == ErrItemNotFound {
+					log.Printf("failed to obtain coin: %v", err)
+					return // errorResponse(c, http.StatusNotFound, err)
+				}
+				if err == ErrInvalidItemType {
+					log.Printf("failed to obtain coin: %v", err)
+					return // errorResponse(c, http.StatusBadRequest, err)
+				}
+				log.Printf("failed to obtain coin: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+			if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
+				if err == ErrUserNotFound || err == ErrItemNotFound {
+					log.Printf("failed to obtain card: %v", err)
+					return // errorResponse(c, http.StatusNotFound, err)
+				}
+				if err == ErrInvalidItemType {
+					log.Printf("failed to obtain card: %v", err)
+					return // errorResponse(c, http.StatusBadRequest, err)
+				}
+				log.Printf("failed to obtain cards: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
+			if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
+				if err == ErrUserNotFound || err == ErrItemNotFound {
+					log.Printf("failed to obtain 45 item: %v", err)
+					return // errorResponse(c, http.StatusNotFound, err)
+				}
+				if err == ErrInvalidItemType {
+					log.Printf("failed to obtain 45 item: %v", err)
+					return // errorResponse(c, http.StatusBadRequest, err)
+				}
+				log.Printf("failed to obtain 45 items: %v", err)
+				return // errorResponse(c, http.StatusInternalServerError, err)
+			}
 		}
 
-		if err := h.obtainCoin(tx, userID, coinAmount); err != nil {
-			if err == ErrUserNotFound || err == ErrItemNotFound {
-				return errorResponse(c, http.StatusNotFound, err)
-			}
-			if err == ErrInvalidItemType {
-				return errorResponse(c, http.StatusBadRequest, err)
-			}
-			return errorResponse(c, http.StatusInternalServerError, err)
+		err = tx.Commit()
+		if err != nil {
+			log.Printf("failed to commit transaction: %v", err)
+			return // errorResponse(c, http.StatusInternalServerError, err)
 		}
-		if err := h.obtainCards(tx, userID, requestAt, cardIDs); err != nil {
-			if err == ErrUserNotFound || err == ErrItemNotFound {
-				return errorResponse(c, http.StatusNotFound, err)
-			}
-			if err == ErrInvalidItemType {
-				return errorResponse(c, http.StatusBadRequest, err)
-			}
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
-		if err := h.obtain45Items(tx, userID, requestAt, item45s); err != nil {
-			if err == ErrUserNotFound || err == ErrItemNotFound {
-				return errorResponse(c, http.StatusNotFound, err)
-			}
-			if err == ErrInvalidItemType {
-				return errorResponse(c, http.StatusBadRequest, err)
-			}
-			return errorResponse(c, http.StatusInternalServerError, err)
-		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
-	}
+	}()
 
 	return successResponse(c, &ReceivePresentResponse{
 		UpdatedResources: makeUpdatedResources(requestAt, nil, nil, nil, nil, nil, nil, *obtainPresent),
