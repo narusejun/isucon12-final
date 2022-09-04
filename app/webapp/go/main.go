@@ -259,6 +259,7 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 	if lock, ok := userOpsLock.Get(strconv.Itoa(int(userID))); ok {
 		if ok := homeCache.Has(strconv.Itoa(int(userID))); (strings.HasSuffix(c.Path(), "/home") && ok) || strings.HasSuffix(c.Path(), "/gacha/index") || (strings.Contains(c.Path(), "/gacha/draw/") && ok) {
 
+		} else if ok := presentsCache.Has(strconv.Itoa(int(userID))); strings.Contains(c.Path(), "/present/") && ok {
 		} else {
 			lock.Lock()
 			lock.Unlock()
@@ -1151,6 +1152,8 @@ func initialize(c *fiber.Ctx) error {
 
 	userOpsLock.Clear()
 
+	presentsCache.Clear()
+
 	inChecking = true
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -1291,6 +1294,7 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 	user.IsuCoin = user2.IsuCoin
+	presentsCache.Set(strconv.Itoa(int(user.ID)), presents)
 
 	// generate session
 	sID, err := h.generateID()
@@ -1524,6 +1528,8 @@ func (h *Handler) login(c *fiber.Ctx) error {
 			UpdatedResources: makeUpdatedResources(requestAt, user, nil, nil, nil, nil, nil, nil),
 		})
 	}
+
+	defer presentsCache.Remove(strconv.Itoa(int(user.ID)))
 
 	var lock *sync.Mutex
 	var ok bool
@@ -1831,6 +1837,8 @@ func (h *Handler) drawGacha(c *fiber.Ctx) error {
 		*presents = append(*presents, present)
 	}
 
+	defer presentsCache.Remove(strconv.Itoa(int(user.ID)))
+
 	var lock *sync.Mutex
 	if lock, ok = userOpsLock.Get(strconv.Itoa(int(userID))); !ok {
 		lock = &sync.Mutex{}
@@ -1887,6 +1895,10 @@ type DrawGachaResponse struct {
 
 // listPresent プレゼント一覧
 // GET /user/{userID}/present/index/{n}
+var (
+	presentsCache = cmap.New[[]*UserPresent]()
+)
+
 func (h *Handler) listPresent(c *fiber.Ctx) error {
 	n, err := strconv.Atoi(c.Params("n"))
 	if err != nil {
@@ -1904,15 +1916,28 @@ func (h *Handler) listPresent(c *fiber.Ctx) error {
 	offset := PresentCountPerPage * (n - 1)
 	presentList := userPresentArrPool.get()
 	defer userPresentArrPool.put(presentList)
-	query := `SELECT * FROM user_presents WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id LIMIT ? OFFSET ?`
-	if err = selectDatabase(userID).Select(presentList, query, userID, PresentCountPerPage+1, offset); err != nil {
-		return errorResponse(c, http.StatusInternalServerError, err)
+	isNext := false
+	if presents, ok := presentsCache.Get(strconv.Itoa(int(userID))); ok {
+		if len(presents) > offset {
+			end := offset + PresentCountPerPage
+			if end > len(presents) {
+				end = len(presents)
+			}
+			*presentList = append(*presentList, presents[offset:end]...)
+			isNext = end < len(presents)
+		}
+	} else {
+		query := `SELECT * FROM user_presents WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id LIMIT ? OFFSET ?`
+		if err = selectDatabase(userID).Select(presentList, query, userID, PresentCountPerPage+1, offset); err != nil {
+			return errorResponse(c, http.StatusInternalServerError, err)
+		}
+
+		isNext = len(*presentList) == PresentCountPerPage+1
+		if isNext {
+			*presentList = (*presentList)[:PresentCountPerPage]
+		}
 	}
 
-	isNext := len(*presentList) == PresentCountPerPage+1
-	if isNext {
-		*presentList = (*presentList)[:PresentCountPerPage]
-	}
 	return successResponse(c, &ListPresentResponse{
 		Presents: *presentList,
 		IsNext:   isNext,
@@ -1954,15 +1979,31 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
+	defer presentsCache.Remove(strconv.Itoa(int(userID)))
+
 	// user_presentsに入っているが未取得のプレゼント取得
-	query := "SELECT id, user_id, sent_at, item_type, item_id, amount, present_message, created_at FROM user_presents WHERE id IN (?) AND deleted_at IS NULL"
-	query, params, err := sqlx.In(query, req.PresentIDs)
-	if err != nil {
-		return errorResponse(c, http.StatusBadRequest, err)
-	}
 	obtainPresent := userPresentArrPool.get()
-	if err = selectDatabase(userID).Select(obtainPresent, query, params...); err != nil {
-		return errorResponse(c, http.StatusBadRequest, err)
+	if presents, ok := presentsCache.Get(strconv.Itoa(int(userID))); ok {
+		presentsMap := make(map[int64]*UserPresent, len(presents))
+		for _, present := range presents {
+			presentsMap[present.ID] = present
+		}
+		for _, presentID := range req.PresentIDs {
+			if present, ok := presentsMap[presentID]; ok {
+				if present.DeletedAt == nil {
+					*obtainPresent = append(*obtainPresent, present)
+				}
+			}
+		}
+	} else {
+		query := "SELECT id, user_id, sent_at, item_type, item_id, amount, present_message, created_at FROM user_presents WHERE id IN (?) AND deleted_at IS NULL"
+		query, params, err := sqlx.In(query, req.PresentIDs)
+		if err != nil {
+			return errorResponse(c, http.StatusBadRequest, err)
+		}
+		if err = selectDatabase(userID).Select(obtainPresent, query, params...); err != nil {
+			return errorResponse(c, http.StatusBadRequest, err)
+		}
 	}
 
 	if len(*obtainPresent) == 0 {
@@ -2022,7 +2063,7 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 
 				if len(presentIDs) > 0 {
 					q := "UPDATE user_presents SET deleted_at=?, updated_at=? WHERE id IN (?)"
-					q, params, err = sqlx.In(q, requestAt, requestAt, presentIDs)
+					q, params, err := sqlx.In(q, requestAt, requestAt, presentIDs)
 					if err != nil {
 						log.Printf("failed to build query: %v", err)
 						return err // errorResponse(c, http.StatusInternalServerError, err)
