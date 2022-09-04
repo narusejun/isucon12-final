@@ -687,7 +687,7 @@ func (h *Handler) adminBanUser(c *fiber.Ctx) error {
 	if _, err = targetDb.Exec(query, banID, userID, requestAt, requestAt, requestAt); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
-	delete(userBan, userID)
+	userBan.Remove(strconv.Itoa(int(userID)))
 
 	return successResponse(c, &AdminBanUserResponse{
 		User: user,

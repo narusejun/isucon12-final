@@ -27,6 +27,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/jmoiron/sqlx"
 	"github.com/mono0x/prand"
+	cmap "github.com/orcaman/concurrent-map/v2"
 	"github.com/pkg/errors"
 	"github.com/rs/xid"
 )
@@ -246,12 +247,12 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 	}
 	c.Context().SetUserValue("userID", userID)
 
-	if _, ok := userOpsLock[userID]; ok {
-		if _, ok := homeCache[userID]; strings.HasSuffix(c.Path(), "/home") && ok {
+	if lock, ok := userOpsLock.Get(strconv.Itoa(int(userID))); ok {
+		if ok := homeCache.Has(strconv.Itoa(int(userID))); strings.HasSuffix(c.Path(), "/home") && ok {
 
 		} else {
-			userOpsLock[userID].Lock()
-			userOpsLock[userID].Unlock()
+			lock.Lock()
+			lock.Unlock()
 		}
 	}
 
@@ -285,7 +286,7 @@ func (h *Handler) apiMiddleware(c *fiber.Ctx) error {
 
 // checkSessionMiddleware
 var (
-	userSession = make(map[int64][]*Session)
+	userSession = cmap.New[[]*Session]()
 )
 
 func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
@@ -316,17 +317,18 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusForbidden, ErrForbidden)
 	}
 
-	if sessions, ok := userSession[sesssionUserID]; ok {
+	if sessions, ok := userSession.Get(strconv.Itoa(int(userID))); ok {
 		ok := false
-		userSession[sesssionUserID] = make([]*Session, 0)
+		sesses := make([]*Session, 0)
 		for i := 0; i < len(sessions); i++ {
 			if sessions[i].ExpiredAt > requestAt {
 				if sessions[i].SessionID == sessID {
 					ok = true
 				}
-				userSession[sesssionUserID] = append(userSession[sesssionUserID], sessions[i])
+				sesses = append(sesses, sessions[i])
 			}
 		}
+		userSession.Set(strconv.Itoa(int(userID)), sesses)
 		if !ok {
 			return errorResponse(c, http.StatusUnauthorized, ErrUnauthorized)
 		}
@@ -340,38 +342,40 @@ func (h *Handler) checkSessionMiddleware(c *fiber.Ctx) error {
 
 // checkOneTimeToken
 var (
-	oneTimeTokenType1 = make(map[int64][]*UserOneTimeToken)
-	oneTimeTokenType2 = make(map[int64][]*UserOneTimeToken)
+	oneTimeTokenType1 = cmap.New[[]*UserOneTimeToken]()
+	oneTimeTokenType2 = cmap.New[[]*UserOneTimeToken]()
 )
 
 func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, requestAt int64) error {
 	if tokenType == 1 {
-		if tokens, ok := oneTimeTokenType1[userID]; ok {
+		if tokens, ok := oneTimeTokenType1.Get(strconv.Itoa(int(userID))); ok {
 			valid := false
-			oneTimeTokenType1[userID] = make([]*UserOneTimeToken, 0)
+			tkns := make([]*UserOneTimeToken, 0)
 			for i := 0; i < len(tokens); i++ {
 				if tokens[i].Token == token && tokens[i].ExpiredAt > requestAt {
 					valid = true
 				} else if tokens[i].ExpiredAt > requestAt {
-					oneTimeTokenType1[userID] = append(oneTimeTokenType1[userID], tokens[i])
+					tkns = append(tkns, tokens[i])
 				}
 			}
+			oneTimeTokenType1.Set(strconv.Itoa(int(userID)), tkns)
 			if valid {
 				return nil
 			}
 		}
 		return ErrInvalidToken
 	} else if tokenType == 2 {
-		if tokens, ok := oneTimeTokenType2[userID]; ok {
+		if tokens, ok := oneTimeTokenType2.Get(strconv.Itoa(int(userID))); ok {
 			valid := false
-			oneTimeTokenType2[userID] = make([]*UserOneTimeToken, 0)
+			tkns := make([]*UserOneTimeToken, 0)
 			for i := 0; i < len(tokens); i++ {
 				if tokens[i].Token == token && tokens[i].ExpiredAt > requestAt {
 					valid = true
 				} else if tokens[i].ExpiredAt > requestAt {
-					oneTimeTokenType2[userID] = append(oneTimeTokenType2[userID], tokens[i])
+					tkns = append(tkns, tokens[i])
 				}
 			}
+			oneTimeTokenType2.Set(strconv.Itoa(int(userID)), tkns)
 			if valid {
 				// 使ったトークンを失効する
 				return nil
@@ -409,16 +413,16 @@ func (h *Handler) checkOneTimeToken(userID int64, token string, tokenType int, r
 
 // checkViewerID
 var (
-	userDevices = make(map[int64]map[string]struct{})
+	userDevices = cmap.New[map[string]struct{}]()
 )
 
 func (h *Handler) checkViewerID(userID int64, viewerID string) error {
-	if devices, ok := userDevices[userID]; ok {
+	if devices, ok := userDevices.Get(strconv.Itoa(int(userID))); ok {
 		if _, ok := devices[viewerID]; ok {
 			return nil
 		}
 	} else {
-		userDevices[userID] = make(map[string]struct{})
+		userDevices.Set(strconv.Itoa(int(userID)), map[string]struct{}{})
 	}
 	query := "SELECT * FROM user_devices WHERE user_id=? AND platform_id=?"
 	device := userDevicePool.get()
@@ -430,18 +434,21 @@ func (h *Handler) checkViewerID(userID int64, viewerID string) error {
 		return err
 	}
 
-	userDevices[userID][viewerID] = struct{}{}
+	if devices, ok := userDevices.Get(strconv.Itoa(int(userID))); ok {
+		devices[viewerID] = struct{}{}
+		userDevices.Set(strconv.Itoa(int(userID)), devices)
+	}
 
 	return nil
 }
 
 // checkBan
 var (
-	userBan = make(map[int64]struct{})
+	userBan = cmap.New[struct{}]()
 )
 
 func (h *Handler) checkBan(userID int64) (bool, error) {
-	_, ok := userBan[userID]
+	_, ok := userBan.Get(strconv.Itoa(int(userID)))
 	if ok {
 		return false, nil
 	}
@@ -450,7 +457,7 @@ func (h *Handler) checkBan(userID int64) (bool, error) {
 	query := "SELECT 1 FROM user_bans WHERE user_id=?"
 	if err := selectDatabase(userID).Get(&banUser, query, userID); err != nil {
 		if err == sql.ErrNoRows {
-			userBan[userID] = struct{}{}
+			userBan.Set(strconv.Itoa(int(userID)), struct{}{})
 			return false, nil
 		}
 		return false, err
@@ -1108,16 +1115,18 @@ func initialize(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	userDevices = make(map[int64]map[string]struct{})
+	userDevices.Clear()
 
-	oneTimeTokenType1 = make(map[int64][]*UserOneTimeToken)
-	oneTimeTokenType2 = make(map[int64][]*UserOneTimeToken)
+	oneTimeTokenType1.Clear()
+	oneTimeTokenType2.Clear()
 
-	userSession = make(map[int64][]*Session)
+	userSession.Clear()
 
-	homeCache = make(map[int64]*HomeResponse)
+	homeCache.Clear()
 
-	userOpsLock = make(map[int64]*sync.Mutex)
+	userBan.Clear()
+
+	userOpsLock.Clear()
 
 	inChecking = true
 	go func() {
@@ -1148,7 +1157,7 @@ type InitializeResponse struct {
 // createUser ユーザの作成
 // POST /user
 var (
-	userOpsLock = make(map[int64]*sync.Mutex)
+	userOpsLock = cmap.New[*sync.Mutex]()
 )
 
 func (h *Handler) createUser(c *fiber.Ctx) error {
@@ -1198,10 +1207,13 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		CreatedAt:    requestAt,
 		UpdatedAt:    requestAt,
 	}
-	if _, ok := userDevices[user.ID]; !ok {
-		userDevices[user.ID] = make(map[string]struct{})
+	var devices map[string]struct{}
+	var ok bool
+	if devices, ok = userDevices.Get(strconv.Itoa(int(user.ID))); !ok {
+		devices = make(map[string]struct{})
 	}
-	userDevices[user.ID][req.ViewerID] = struct{}{}
+	devices[req.ViewerID] = struct{}{}
+	userDevices.Set(strconv.Itoa(int(user.ID)), devices)
 
 	// 初期デッキ付与
 	ok, initCard := getItemMasterByID(2)
@@ -1275,15 +1287,18 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		ExpiredAt: requestAt + 86400,
 	}
 
-	if _, ok := userSession[user.ID]; !ok {
-		userSession[user.ID] = make([]*Session, 0)
+	sessions, ok := userSession.Get(strconv.Itoa(int(user.ID)))
+	if !ok {
+		sessions = make([]*Session, 0)
 	}
-	userSession[user.ID] = append(userSession[user.ID], sess)
+	sessions = append(sessions, sess)
+	userSession.Set(strconv.Itoa(int(user.ID)), sessions)
 
-	userOpsLock[user.ID] = &sync.Mutex{}
-	userOpsLock[user.ID].Lock()
+	lock := &sync.Mutex{}
+	lock.Lock()
+	userOpsLock.Set(strconv.Itoa(int(user.ID)), lock)
 	go func() {
-		defer userOpsLock[user.ID].Unlock()
+		defer lock.Unlock()
 		tx, err := selectDatabase(uID).Beginx()
 		if err != nil {
 			log.Printf("failed to begin transaction: %v", err)
@@ -1331,11 +1346,11 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 		}
 	}()
 
-	homeCache[user.ID] = &HomeResponse{
+	homeCache.Set(strconv.Itoa(int(user.ID)), &HomeResponse{
 		User:              user,
 		Deck:              initDeck,
 		TotalAmountPerSec: totalAmountPerSec,
-	}
+	})
 
 	return successResponse(c, &CreateUserResponse{
 		UserID:           user.ID,
@@ -1432,7 +1447,7 @@ func (h *Handler) login(c *fiber.Ctx) error {
 	//if _, err = tx.Exec(query, sess.ID, sess.UserID, sess.SessionID, sess.CreatedAt, sess.UpdatedAt, sess.ExpiredAt); err != nil {
 	//	return errorResponse(c, http.StatusInternalServerError, err)
 	//}
-	userSession[req.UserID] = []*Session{sess}
+	userSession.Set(strconv.Itoa(int(req.UserID)), []*Session{sess})
 
 	// すでにログインしているユーザはログイン処理をしない
 	if isCompleteTodayLogin(time.Unix(user.LastActivatedAt, 0), time.Unix(requestAt, 0)) {
@@ -1473,8 +1488,8 @@ func (h *Handler) login(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	if _, ok := homeCache[user.ID]; ok {
-		delete(homeCache, user.ID)
+	if _, ok := homeCache.Get(strconv.Itoa(int(user.ID))); ok {
+		homeCache.Remove(strconv.Itoa(int(user.ID)))
 	}
 
 	return successResponse(c, &LoginResponse{
@@ -1553,8 +1568,8 @@ func (h *Handler) listGacha(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 600,
 	}
-	oneTimeTokenType1[userID] = []*UserOneTimeToken{token}
-	delete(oneTimeTokenType2, userID)
+	oneTimeTokenType1.Set(strconv.Itoa(int(userID)), []*UserOneTimeToken{token})
+	oneTimeTokenType2.Remove(strconv.Itoa(int(userID)))
 
 	//go func() {
 	//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
@@ -1851,16 +1866,19 @@ func (h *Handler) receivePresent(c *fiber.Ctx) error {
 		}
 	}
 
-	if _, ok := homeCache[userID]; ok {
-		delete(homeCache, userID)
+	if _, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		homeCache.Remove(strconv.Itoa(int(userID)))
 	}
 
-	if _, ok := userOpsLock[userID]; !ok {
-		userOpsLock[userID] = &sync.Mutex{}
+	var lock *sync.Mutex
+	var ok bool
+	if lock, ok = userOpsLock.Get(strconv.Itoa(int(userID))); !ok {
+		lock = &sync.Mutex{}
+		userOpsLock.Set(strconv.Itoa(int(userID)), lock)
 	}
-	userOpsLock[userID].Lock()
+	lock.Lock()
 	go func() {
-		defer userOpsLock[userID].Unlock()
+		defer lock.Unlock()
 
 		defer userPresentArrPool.put(obtainPresent)
 		tx, err := selectDatabase(userID).Beginx()
@@ -1995,8 +2013,8 @@ func (h *Handler) listItem(c *fiber.Ctx) error {
 		UpdatedAt: requestAt,
 		ExpiredAt: requestAt + 600,
 	}
-	delete(oneTimeTokenType1, userID)
-	oneTimeTokenType2[userID] = []*UserOneTimeToken{token}
+	oneTimeTokenType1.Remove(strconv.Itoa(int(userID)))
+	oneTimeTokenType2.Set(strconv.Itoa(int(userID)), []*UserOneTimeToken{token})
 	//go func() {
 	//	// genearte one time token
 	//	query := "UPDATE user_one_time_tokens SET deleted_at=? WHERE user_id=? AND deleted_at IS NULL"
@@ -2305,8 +2323,8 @@ func (h *Handler) updateDeck(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	if _, ok := homeCache[userID]; ok {
-		delete(homeCache, userID)
+	if _, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		homeCache.Remove(strconv.Itoa(int(userID)))
 	}
 
 	return successResponse(c, &UpdateDeckResponse{
@@ -2395,8 +2413,8 @@ func (h *Handler) reward(c *fiber.Ctx) error {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
 
-	if _, ok := homeCache[userID]; ok {
-		delete(homeCache, userID)
+	if _, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
+		homeCache.Remove(strconv.Itoa(int(userID)))
 	}
 
 	return successResponse(c, &RewardResponse{
@@ -2415,7 +2433,7 @@ type RewardResponse struct {
 // home ホーム取得
 // GET /user/{userID}/home
 var (
-	homeCache = make(map[int64]*HomeResponse)
+	homeCache = cmap.New[*HomeResponse]()
 )
 
 func (h *Handler) home(c *fiber.Ctx) error {
@@ -2430,7 +2448,7 @@ func (h *Handler) home(c *fiber.Ctx) error {
 	}
 
 	// キャッシュがあれば返す
-	if res, ok := homeCache[userID]; ok {
+	if res, ok := homeCache.Get(strconv.Itoa(int(userID))); ok {
 		pastTime := requestAt - res.User.LastGetRewardAt
 		res.Now = requestAt
 		res.PastTime = pastTime
@@ -2485,7 +2503,7 @@ func (h *Handler) home(c *fiber.Ctx) error {
 		TotalAmountPerSec: totalAmountPerSec,
 		PastTime:          pastTime,
 	}
-	homeCache[userID] = res
+	homeCache.Set(strconv.Itoa(int(userID)), res)
 
 	return successResponse(c, res)
 }
