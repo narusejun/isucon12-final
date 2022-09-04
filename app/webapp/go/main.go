@@ -952,6 +952,7 @@ func (h *Handler) createUser(c *fiber.Ctx) error {
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, ErrGetRequestTime)
 	}
+	fmt.Printf("POST /user requestAt: %d\n", requestAt)
 
 	// ユーザ作成
 	uID, err := h.generateID()
@@ -1512,11 +1513,7 @@ func (h *Handler) listPresent(c *fiber.Ctx) error {
 	offset := PresentCountPerPage * (n - 1)
 	presentList := userPresentArrPool.get()
 	defer userPresentArrPool.put(presentList)
-	query := `
-	SELECT * FROM user_presents
-	WHERE user_id = ? AND deleted_at IS NULL
-	ORDER BY created_at DESC, id
-	LIMIT ? OFFSET ?`
+	query := `SELECT * FROM user_presents WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id LIMIT ? OFFSET ?`
 	if err = selectDatabase(userID).Select(presentList, query, userID, PresentCountPerPage+1, offset); err != nil {
 		return errorResponse(c, http.StatusInternalServerError, err)
 	}
